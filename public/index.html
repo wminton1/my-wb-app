@@ -1,0 +1,1497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaborative Whiteboard - Room-Based Platform</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            grid-template-columns: 300px 1fr 300px;
+            grid-template-areas: 
+                "left-panel toolbar right-panel"
+                "left-panel canvas right-panel"
+                "left-panel status right-panel";
+            height: 100vh;
+            gap: 10px;
+            padding: 10px;
+        }
+
+        /* Login Screen */
+        .login-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .login-form {
+            background: white;
+            padding: 2.5rem;
+            border-radius: 20px;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            min-width: 450px;
+            animation: slideIn 0.5s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .login-form h2 {
+            margin-bottom: 1rem;
+            color: #333;
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .login-form .subtitle {
+            color: #666;
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+        }
+
+        .role-selector {
+            display: flex;
+            gap: 1.5rem;
+            margin: 2rem 0;
+            justify-content: center;
+        }
+
+        .role-option {
+            flex: 1;
+            padding: 2rem 1rem;
+            border: 3px solid #e0e0e0;
+            border-radius: 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            background: #fafafa;
+        }
+
+        .role-option.selected {
+            border-color: #4285f4;
+            background: linear-gradient(135deg, #f8f9ff, #e3f2fd);
+            transform: translateY(-5px);
+            box-shadow: 0 15px 30px rgba(66, 133, 244, 0.3);
+        }
+
+        .role-option:hover:not(.selected) {
+            border-color: #4285f4;
+            transform: translateY(-2px);
+        }
+
+        .role-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        .role-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #333;
+        }
+
+        .role-description {
+            font-size: 0.9rem;
+            color: #666;
+            line-height: 1.4;
+        }
+
+        .login-form input {
+            width: 100%;
+            padding: 18px;
+            margin: 0.8rem 0;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 16px;
+            transition: all 0.3s;
+            background: #fafafa;
+        }
+
+        .login-form input:focus {
+            border-color: #4285f4;
+            outline: none;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.1);
+        }
+
+        .login-form button {
+            width: 100%;
+            padding: 18px;
+            background: linear-gradient(135deg, #4285f4, #34a853);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 1.5rem;
+            transition: all 0.3s;
+        }
+
+        .login-form button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(66, 133, 244, 0.4);
+        }
+
+        /* Lobby Screen */
+        .lobby-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 999;
+        }
+
+        .lobby-container {
+            background: white;
+            border-radius: 20px;
+            padding: 2rem;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .lobby-header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .lobby-title {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+
+        .room-code {
+            font-size: 1.5rem;
+            color: #4285f4;
+            font-weight: 600;
+            background: #f0f4ff;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            display: inline-block;
+            margin: 0.5rem 0;
+        }
+
+        .lobby-status {
+            color: #666;
+            font-size: 1.1rem;
+        }
+
+        .participants-section {
+            margin: 2rem 0;
+        }
+
+        .participants-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .participants-count {
+            background: #4285f4;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+
+        .participants-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .participant-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 1rem;
+            text-align: center;
+            border: 2px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .participant-card.host {
+            background: linear-gradient(135deg, #fff3e0, #ffe0b2);
+            border-color: #ff9800;
+        }
+
+        .participant-card.ready {
+            background: linear-gradient(135deg, #e8f5e8, #c8e6c8);
+            border-color: #4caf50;
+        }
+
+        .participant-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            margin: 0 auto 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: white;
+        }
+
+        .participant-name {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .participant-role {
+            font-size: 0.8rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .lobby-controls {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 2px solid #e0e0e0;
+        }
+
+        .lobby-btn {
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .lobby-btn.primary {
+            background: linear-gradient(135deg, #4285f4, #34a853);
+            color: white;
+        }
+
+        .lobby-btn.secondary {
+            background: #f5f5f5;
+            color: #666;
+            border: 2px solid #e0e0e0;
+        }
+
+        .lobby-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .lobby-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .ready-toggle {
+            background: #4caf50;
+            color: white;
+            padding: 0.7rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            margin-top: 1rem;
+        }
+
+        .ready-toggle.not-ready {
+            background: #9e9e9e;
+        }
+
+        /* Main App Styles (simplified for space) */
+        .toolbar {
+            grid-area: toolbar;
+            background: white;
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            flex-wrap: wrap;
+            overflow-x: auto;
+        }
+
+        .tool-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            white-space: nowrap;
+        }
+
+        .tool-btn {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: transparent;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .tool-btn:hover, .tool-btn.active {
+            background: #4285f4;
+            color: white;
+            transform: translateY(-1px);
+        }
+
+        .host-controls {
+            background: linear-gradient(135deg, #ff9800, #f57c00);
+            color: white;
+            border-radius: 8px;
+            padding: 0.5rem;
+        }
+
+        .canvas-area {
+            grid-area: canvas;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            position: relative;
+            border: 3px solid #e0e0e0;
+        }
+
+        #whiteboard {
+            width: 100%;
+            height: 100%;
+            display: block;
+            cursor: crosshair;
+        }
+
+        .text-input-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 3;
+        }
+
+        .text-input {
+            position: absolute;
+            background: transparent;
+            border: 2px dashed #4285f4;
+            outline: none;
+            font-family: Arial, sans-serif;
+            color: #333;
+            padding: 4px;
+            min-width: 100px;
+            min-height: 30px;
+            pointer-events: all;
+            resize: both;
+            overflow: hidden;
+        }
+
+        .user-cursors {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        .user-cursor {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid white;
+            transform: translate(-50%, -50%);
+            transition: all 0.1s ease;
+        }
+
+        .user-cursor.host {
+            border: 3px solid gold;
+            box-shadow: 0 0 10px rgba(255, 215, 0, 0.7);
+        }
+
+        .left-panel, .right-panel {
+            background: white;
+            border-radius: 12px;
+            padding: 1rem;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+
+        .left-panel {
+            grid-area: left-panel;
+        }
+
+        .right-panel {
+            grid-area: right-panel;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .panel-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 1rem;
+        }
+
+        .status-bar {
+            grid-area: status;
+            background: white;
+            border-radius: 8px;
+            padding: 0.7rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            font-size: 14px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1200px) {
+            .app-container {
+                grid-template-columns: 250px 1fr 250px;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .app-container {
+                grid-template-rows: auto auto 1fr auto;
+                grid-template-columns: 1fr 1fr;
+                grid-template-areas: 
+                    "toolbar toolbar"
+                    "left-panel right-panel"
+                    "canvas canvas"
+                    "status status";
+            }
+            
+            .left-panel, .right-panel {
+                max-height: 200px;
+            }
+
+            .role-selector {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .participants-grid {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container" id="mainApp" style="display: none;">
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <div class="tool-group">
+                <button class="tool-btn active" id="penTool" onclick="setTool('pen')">✏️ Pen</button>
+                <button class="tool-btn" id="eraserTool" onclick="setTool('eraser')">🧽 Eraser</button>
+                <button class="tool-btn" id="textTool" onclick="setTool('text')">📝 Text</button>
+                <button class="tool-btn" onclick="clearCanvas()">🗑️ Clear</button>
+            </div>
+            
+            <div class="tool-group">
+                <input type="color" class="color-picker" id="colorPicker" value="#000000">
+                <label>Color</label>
+            </div>
+            
+            <div class="tool-group">
+                <input type="range" class="size-slider" id="sizeSlider" min="2" max="50" value="5">
+                <span id="sizeDisplay">5px</span>
+            </div>
+
+            <!-- File Upload -->
+            <div class="tool-group">
+                <input type="file" id="fileInput" class="file-input" accept="image/*,.pdf,.ppt,.pptx" onchange="handleFileUpload(event)" style="display: none;">
+                <label for="fileInput" class="tool-btn" style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                    📎 Add File
+                </label>
+            </div>
+
+            <!-- Screenshot -->
+            <div class="tool-group">
+                <button class="tool-btn" onclick="takeScreenshot()">📸 Screenshot</button>
+            </div>
+            
+            <!-- Host Controls -->
+            <div class="tool-group host-controls" id="hostControls" style="display: none;">
+                <button class="tool-btn" onclick="toggleParticipantDrawing()">
+                    <span id="drawingToggleText">🖊️ Allow Drawing</span>
+                </button>
+                <button class="tool-btn" onclick="toggleParticipantChat()">
+                    <span id="chatToggleText">💬 Allow Chat</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Canvas Area -->
+        <div class="canvas-area">
+            <canvas id="whiteboard"></canvas>
+            <div class="text-input-overlay" id="textInputOverlay"></div>
+            <div class="user-cursors" id="userCursors"></div>
+        </div>
+
+        <!-- Left Panel -->
+        <div class="left-panel">
+            <div class="panel-section">
+                <h3>📁 Background Files</h3>
+                <div id="fileList">
+                    <p style="color: #666; font-size: 14px;">No files uploaded</p>
+                </div>
+            </div>
+
+            <!-- Host Recording Controls -->
+            <div class="panel-section" id="recordingPanel" style="display: none;">
+                <h3>🎥 Session Recording</h3>
+                <button id="recordBtn" onclick="toggleRecording()" style="width: 100%; padding: 12px; background: #4285f4; color: white; border: none; border-radius: 8px; font-weight: 600;">
+                    🎙️ Start Recording
+                </button>
+                <div id="recordingInfo" style="display: none; text-align: center; margin-top: 1rem; color: #666;">
+                    Recording: <span id="recordingTime">00:00</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div class="right-panel">
+            <div class="panel-section">
+                <h3>👥 Participants</h3>
+                <div id="usersList" style="max-height: 150px; overflow-y: auto;"></div>
+            </div>
+            
+            <div class="panel-section">
+                <h3>💬 Chat</h3>
+                <div id="chatMessages" style="height: 150px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 0.7rem; background: white; margin-bottom: 0.5rem;"></div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="chatInput" placeholder="Type message..." style="flex: 1; padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px;">
+                    <button onclick="sendMessage()" style="padding: 10px 15px; background: #4285f4; color: white; border: none; border-radius: 8px;">Send</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div>
+                <strong>Room:</strong> <span id="currentRoom">-</span> |
+                <strong>Role:</strong> <span id="userRole">Participant</span>
+            </div>
+            <div id="participantCount">0 participants</div>
+        </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div class="login-screen" id="loginScreen">
+        <div class="login-form">
+            <h2>Collaborative Whiteboard</h2>
+            <p class="subtitle">Choose how you want to participate</p>
+            
+            <div class="role-selector">
+                <div class="role-option" id="hostRole" onclick="selectRole('host')">
+                    <div class="role-icon">🎯</div>
+                    <div class="role-title">Create Room</div>
+                    <div class="role-description">Start a new session and control the room settings</div>
+                </div>
+                <div class="role-option selected" id="participantRole" onclick="selectRole('participant')">
+                    <div class="role-icon">👥</div>
+                    <div class="role-title">Join Room</div>
+                    <div class="role-description">Enter an existing room with a room code</div>
+                </div>
+            </div>
+            
+            <input type="text" id="usernameInput" placeholder="Your display name" maxlength="25">
+            <input type="text" id="roomIdInput" placeholder="Room code (leave empty to create new)" maxlength="20">
+            <button onclick="joinRoom()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Lobby Screen -->
+    <div class="lobby-screen" id="lobbyScreen">
+        <div class="lobby-container">
+            <div class="lobby-header">
+                <h2 class="lobby-title">Room Lobby</h2>
+                <div class="room-code" id="lobbyRoomCode">ABC123</div>
+                <p class="lobby-status" id="lobbyStatus">Waiting for participants to join...</p>
+            </div>
+
+            <div class="participants-section">
+                <div class="participants-header">
+                    <h3>Participants</h3>
+                    <div class="participants-count" id="lobbyParticipantCount">0 joined</div>
+                </div>
+                <div class="participants-grid" id="lobbyParticipants"></div>
+            </div>
+
+            <div class="lobby-controls">
+                <button class="lobby-btn secondary" onclick="leaveLobby()">Leave Room</button>
+                <button class="ready-toggle" id="readyToggle" onclick="toggleReady()" style="display: none;">Ready</button>
+                <button class="lobby-btn primary" id="startSessionBtn" onclick="startSession()" style="display: none;">Start Session</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Socket.io connection
+        const socket = io();
+        
+        // Canvas setup
+        const canvas = document.getElementById('whiteboard');
+        const ctx = canvas.getContext('2d');
+        
+        // App state
+        let currentTool = 'pen';
+        let currentColor = '#000000';
+        let currentSize = 5;
+        let currentRoom = '';
+        let username = '';
+        let userRole = 'participant';
+        let isHost = false;
+        let roomSettings = {};
+        let lobbyParticipants = new Map();
+        let sessionParticipants = new Map(); // Track participants during session
+        let isReady = false;
+        let sessionStarted = false;
+        
+        function selectRole(role) {
+            userRole = role;
+            isHost = (role === 'host');
+            document.querySelectorAll('.role-option').forEach(opt => opt.classList.remove('selected'));
+            document.getElementById(role + 'Role').classList.add('selected');
+            
+            const roomInput = document.getElementById('roomIdInput');
+            if (role === 'host') {
+                roomInput.placeholder = "Room name (leave empty for random code)";
+            } else {
+                roomInput.placeholder = "Enter room code to join";
+            }
+        }
+        
+        function joinRoom() {
+            username = document.getElementById('usernameInput').value.trim();
+            if (!username) {
+                alert('Please enter your name');
+                return;
+            }
+            
+            const roomInput = document.getElementById('roomIdInput').value.trim();
+            
+            if (isHost) {
+                // Host creates a room
+                currentRoom = roomInput || generateRoomCode();
+                console.log('Creating room:', currentRoom);
+                socket.emit('create-room', { roomId: currentRoom, username, role: 'host' });
+            } else {
+                // Participant joins existing room
+                if (!roomInput) {
+                    alert('Please enter a room code');
+                    return;
+                }
+                currentRoom = roomInput.toUpperCase();
+                console.log('Joining room:', currentRoom);
+                socket.emit('join-room', { roomId: currentRoom, username, role: 'participant' });
+            }
+        }
+        
+        function generateRoomCode() {
+            const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+            console.log('Generated room code:', code);
+            return code;
+        }
+        
+        function showLobby() {
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('lobbyScreen').style.display = 'flex';
+            document.getElementById('lobbyRoomCode').textContent = currentRoom;
+            
+            if (isHost) {
+                document.getElementById('startSessionBtn').style.display = 'block';
+                document.getElementById('lobbyStatus').textContent = 'You can start the session when ready';
+            } else {
+                document.getElementById('readyToggle').style.display = 'block';
+                document.getElementById('lobbyStatus').textContent = 'Waiting for host to start session...';
+            }
+        }
+        
+        function updateLobbyParticipants(participants) {
+            const container = document.getElementById('lobbyParticipants');
+            const count = document.getElementById('lobbyParticipantCount');
+            
+            container.innerHTML = '';
+            count.textContent = `${participants.length} joined`;
+            
+            participants.forEach(participant => {
+                const card = document.createElement('div');
+                card.className = `participant-card ${participant.role}`;
+                if (participant.ready) card.classList.add('ready');
+                
+                const avatar = document.createElement('div');
+                avatar.className = 'participant-avatar';
+                avatar.style.backgroundColor = `hsl(${participant.username.charCodeAt(0) * 137.508}%, 70%, 50%)`;
+                avatar.textContent = participant.username.charAt(0).toUpperCase();
+                
+                const name = document.createElement('div');
+                name.className = 'participant-name';
+                name.textContent = participant.username;
+                
+                const role = document.createElement('div');
+                role.className = 'participant-role';
+                role.textContent = participant.role;
+                
+                card.appendChild(avatar);
+                card.appendChild(name);
+                card.appendChild(role);
+                
+                if (participant.ready && participant.role === 'participant') {
+                    const readyBadge = document.createElement('div');
+                    readyBadge.textContent = '✓ Ready';
+                    readyBadge.style.cssText = 'color: #4caf50; font-weight: 600; font-size: 0.8rem; margin-top: 0.25rem;';
+                    card.appendChild(readyBadge);
+                }
+                
+                container.appendChild(card);
+            });
+        }
+        
+        function toggleReady() {
+            isReady = !isReady;
+            const btn = document.getElementById('readyToggle');
+            
+            if (isReady) {
+                btn.textContent = '✓ Ready';
+                btn.classList.remove('not-ready');
+            } else {
+                btn.textContent = 'Not Ready';
+                btn.classList.add('not-ready');
+            }
+            
+            socket.emit('toggle-ready', { ready: isReady });
+        }
+        
+        function startSession() {
+            if (!isHost) return;
+            socket.emit('start-session');
+        }
+        
+        function leaveLobby() {
+            socket.emit('leave-room');
+            window.location.reload();
+        }
+        
+        function enterWhiteboard() {
+            document.getElementById('lobbyScreen').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'grid';
+            
+            // Set up UI based on role
+            document.getElementById('currentRoom').textContent = currentRoom;
+            document.getElementById('userRole').textContent = isHost ? 'Host' : 'Participant';
+            
+            if (isHost) {
+                document.getElementById('hostControls').style.display = 'flex';
+                document.getElementById('recordingPanel').style.display = 'block';
+            }
+            
+            resizeCanvas();
+            setupDrawingEventListeners(); // Initialize drawing events
+            sessionStarted = true;
+            
+            console.log('Entered whiteboard, session started');
+        }
+        
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            const rect = container.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+        }
+        
+        // Socket event listeners
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+        });
+        
+        socket.on('error', (data) => {
+            console.error('Server error:', data);
+            alert(`Error: ${data.message}`);
+        });
+        
+        socket.on('room-created', (data) => {
+            console.log('Room created:', data);
+            showLobby();
+            updateLobbyParticipants(data.participants);
+        });
+        
+        socket.on('room-joined', (data) => {
+            console.log('Room joined:', data);
+            showLobby();
+            updateLobbyParticipants(data.participants);
+        });
+        
+        socket.on('room-exists', () => {
+            alert('Room code already exists. Please choose a different name.');
+        });
+        
+        socket.on('room-not-found', () => {
+            alert('Room not found. Please check the room code.');
+        });
+        
+        socket.on('room-full', () => {
+            alert('Room is full. Please try another room.');
+        });
+        
+        socket.on('lobby-updated', (data) => {
+            console.log('Lobby updated:', data);
+            updateLobbyParticipants(data.participants);
+        });
+        
+        socket.on('session-starting', () => {
+            document.getElementById('lobbyStatus').textContent = 'Session starting...';
+            setTimeout(enterWhiteboard, 1000);
+        });
+        
+        function updateSessionParticipants(participants) {
+            sessionParticipants.clear();
+            participants.forEach(p => {
+                sessionParticipants.set(p.id, p);
+            });
+            
+            // Update the participants list in the right panel
+            const usersList = document.getElementById('usersList');
+            if (usersList) {
+                usersList.innerHTML = participants.map(participant => {
+                    const roleIcon = participant.role === 'host' ? '🎯' : '👥';
+                    const roleColor = participant.role === 'host' ? '#ff9800' : '#4285f4';
+                    
+                    return `
+                        <div style="
+                            padding: 0.5rem;
+                            margin: 0.25rem 0;
+                            background: ${participant.role === 'host' ? 'linear-gradient(135deg, #fff3e0, #ffe0b2)' : 'linear-gradient(135deg, #e3f2fd, #bbdefb)'};
+                            border-radius: 8px;
+                            border-left: 3px solid ${roleColor};
+                            font-size: 14px;
+                            display: flex;
+                            align-items: center;
+                            gap: 0.5rem;
+                        ">
+                            <span style="font-size: 16px;">${roleIcon}</span>
+                            <div>
+                                <div style="font-weight: 600;">${participant.username}</div>
+                                <div style="font-size: 11px; color: #666; text-transform: uppercase;">${participant.role}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            // Update participant count in status bar
+            const participantCount = document.getElementById('participantCount');
+            if (participantCount) {
+                const count = participants.length;
+                participantCount.textContent = `${count} participant${count !== 1 ? 's' : ''}`;
+            }
+        }
+        
+        socket.on('room-ended', (data) => {
+            alert(`Room ended: ${data.reason}`);
+            window.location.reload();
+        });
+        
+        // Simplified whiteboard functions for this demo
+        function setTool(tool) {
+            currentTool = tool;
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(tool + 'Tool').classList.add('active');
+            
+            // Update cursor based on tool
+            if (tool === 'eraser') {
+                canvas.style.cursor = 'grab';
+            } else if (tool === 'text') {
+                canvas.style.cursor = 'text';
+            } else {
+                canvas.style.cursor = 'crosshair';
+            }
+            
+            console.log('Tool changed to:', tool);
+        }
+        
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            socket.emit('clear-canvas');
+            
+            // Clear remote user tracking
+            if (window.remoteLastPoints) {
+                window.remoteLastPoints.clear();
+            }
+            
+            // Clear text regions tracking
+            if (window.textRegions) {
+                window.textRegions.clear();
+            }
+            
+            console.log('Canvas cleared');
+        }
+        
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                if (file.type.startsWith('image/')) {
+                    setBackgroundImage(e.target.result, file.name);
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function setBackgroundImage(dataUrl, filename) {
+            const img = new Image();
+            img.onload = function() {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                socket.emit('background-image', { dataUrl, filename });
+            };
+            img.src = dataUrl;
+        }
+        
+        function takeScreenshot() {
+            const link = document.createElement('a');
+            link.download = `whiteboard-${currentRoom}-${new Date().toISOString().slice(0, 19)}.png`;
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+        
+        function toggleRecording() {
+            const btn = document.getElementById('recordBtn');
+            if (btn.textContent.includes('Start')) {
+                btn.textContent = '⏹️ Stop Recording';
+                btn.style.background = '#f44336';
+                document.getElementById('recordingInfo').style.display = 'block';
+                addChatMessage('System', '🎙️ Recording started');
+            } else {
+                btn.textContent = '🎙️ Start Recording';
+                btn.style.background = '#4285f4';
+                document.getElementById('recordingInfo').style.display = 'none';
+                addChatMessage('System', '⏹️ Recording stopped');
+            }
+        }
+        
+        function toggleParticipantDrawing() {
+            // Placeholder for participant drawing toggle
+            const btn = document.getElementById('drawingToggleText');
+            if (btn.textContent.includes('Allow')) {
+                btn.textContent = '🚫 Disable Drawing';
+            } else {
+                btn.textContent = '🖊️ Allow Drawing';
+            }
+        }
+        
+        function toggleParticipantChat() {
+            // Placeholder for participant chat toggle
+            const btn = document.getElementById('chatToggleText');
+            if (btn.textContent.includes('Allow')) {
+                btn.textContent = '🚫 Disable Chat';
+            } else {
+                btn.textContent = '💬 Allow Chat';
+            }
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (message) {
+                addChatMessage(username, message);
+                socket.emit('chat-message', message);
+                input.value = '';
+            }
+        }
+        
+        function addChatMessage(sender, message) {
+            const chatMessages = document.getElementById('chatMessages');
+            const messageElement = document.createElement('div');
+            messageElement.style.cssText = 'margin-bottom: 0.5rem; font-size: 14px;';
+            
+            const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            if (sender === 'System') {
+                messageElement.innerHTML = `<em style="color: #666;">[${timestamp}] ${message}</em>`;
+            } else {
+                const roleIcon = isHost && sender === username ? '🎯' : '👥';
+                messageElement.innerHTML = `
+                    <span style="color: #999; font-size: 11px;">[${timestamp}]</span>
+                    <span style="font-weight: 600; color: #4285f4;">${roleIcon} ${sender}:</span> ${message}
+                `;
+            }
+            
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        // Drawing functions with proper path handling and stylus support
+        let isDrawing = false;
+        let lastPoint = null;
+        let activeTextInputs = new Map();
+        
+        function getCanvasCoordinates(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            // Handle touch/stylus events
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else if (e.changedTouches && e.changedTouches.length > 0) {
+                clientX = e.changedTouches[0].clientX;
+                clientY = e.changedTouches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            return {
+                x: (clientX - rect.left) * scaleX,
+                y: (clientY - rect.top) * scaleY
+            };
+        }
+        
+        function startDrawing(e) {
+            e.preventDefault();
+            
+            if (currentTool === 'text') {
+                addTextBox(e);
+                return;
+            }
+            
+            if (!sessionStarted) return;
+            
+            isDrawing = true;
+            const coords = getCanvasCoordinates(e);
+            lastPoint = coords;
+            
+            ctx.beginPath();
+            ctx.moveTo(coords.x, coords.y);
+            
+            // Emit start drawing event
+            socket.emit('drawing', {
+                x: coords.x,
+                y: coords.y,
+                color: currentColor,
+                size: currentSize,
+                tool: currentTool,
+                type: 'start'
+            });
+        }
+        
+        function draw(e) {
+            e.preventDefault();
+            
+            if (!isDrawing || !sessionStarted || currentTool === 'text') return;
+            
+            const coords = getCanvasCoordinates(e);
+            
+            ctx.lineWidth = currentSize;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            if (currentTool === 'pen') {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = currentColor;
+            } else if (currentTool === 'eraser') {
+                ctx.globalCompositeOperation = 'destination-out';
+            }
+            
+            if (lastPoint) {
+                ctx.beginPath();
+                ctx.moveTo(lastPoint.x, lastPoint.y);
+                ctx.lineTo(coords.x, coords.y);
+                ctx.stroke();
+            }
+            
+            lastPoint = coords;
+            
+            // Emit drawing data
+            socket.emit('drawing', {
+                x: coords.x,
+                y: coords.y,
+                color: currentColor,
+                size: currentSize,
+                tool: currentTool,
+                type: 'draw'
+            });
+        }
+        
+        function stopDrawing(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+            
+            isDrawing = false;
+            lastPoint = null;
+            ctx.beginPath();
+            
+            // Emit stop drawing event
+            socket.emit('drawing', {
+                type: 'stop'
+            });
+        }
+        
+        // Text functionality with live typing
+        function addTextBox(e) {
+            if (!sessionStarted) return;
+            
+            const coords = getCanvasCoordinates(e);
+            const textId = Date.now().toString();
+            
+            const textInput = document.createElement('textarea');
+            textInput.className = 'text-input';
+            textInput.id = `text-${textId}`;
+            textInput.placeholder = 'Type text here...';
+            textInput.style.left = (coords.x / canvas.width * 100) + '%';
+            textInput.style.top = (coords.y / canvas.height * 100) + '%';
+            textInput.style.fontSize = Math.max(12, currentSize) + 'px';
+            textInput.style.color = currentColor;
+            
+            // Live typing - update canvas as user types
+            let typingTimer;
+            textInput.addEventListener('input', () => {
+                clearTimeout(typingTimer);
+                
+                // Update canvas immediately
+                const currentText = textInput.value;
+                drawTextOnCanvas(coords.x, coords.y, currentText, currentColor, Math.max(12, currentSize), textId);
+                
+                // Emit live text update with debouncing
+                typingTimer = setTimeout(() => {
+                    socket.emit('text-typing', {
+                        id: textId,
+                        x: coords.x,
+                        y: coords.y,
+                        text: currentText,
+                        color: currentColor,
+                        size: Math.max(12, currentSize),
+                        username: username,
+                        timestamp: Date.now()
+                    });
+                }, 100); // Small delay to avoid spam
+            });
+            
+            // Handle text completion
+            textInput.addEventListener('blur', () => finishTextInput(textId));
+            textInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    finishTextInput(textId);
+                }
+                e.stopPropagation();
+            });
+            
+            document.getElementById('textInputOverlay').appendChild(textInput);
+            activeTextInputs.set(textId, { 
+                element: textInput, 
+                coords: coords,
+                lastText: ''
+            });
+            
+            // Focus and select
+            setTimeout(() => textInput.focus(), 10);
+            
+            // Emit text box creation
+            socket.emit('text-started', {
+                id: textId,
+                x: coords.x,
+                y: coords.y,
+                color: currentColor,
+                size: Math.max(12, currentSize),
+                username: username,
+                timestamp: Date.now()
+            });
+        }
+        
+        function finishTextInput(textId) {
+            const textData = activeTextInputs.get(textId);
+            if (!textData) return;
+            
+            const textInput = textData.element;
+            const coords = textData.coords;
+            const text = textInput.value.trim();
+            
+            // Emit completion
+            socket.emit('text-completed', {
+                id: textId,
+                x: coords.x,
+                y: coords.y,
+                text: text,
+                color: currentColor,
+                size: Math.max(12, currentSize),
+                username: username,
+                timestamp: Date.now()
+            });
+            
+            // Remove text input but keep text on canvas
+            textInput.remove();
+            activeTextInputs.delete(textId);
+        }
+        
+        function drawTextOnCanvas(x, y, text, color, size, textId = null) {
+            // If this is a live text update, clear the previous version first
+            if (textId && window.textRegions) {
+                const previousRegion = window.textRegions.get(textId);
+                if (previousRegion) {
+                    // Clear the area where the previous text was
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'destination-out';
+                    ctx.fillRect(previousRegion.x - 2, previousRegion.y - 2, 
+                               previousRegion.width + 4, previousRegion.height + 4);
+                    ctx.restore();
+                }
+            }
+            
+            if (!text) return;
+            
+            ctx.save();
+            ctx.font = `${size}px Arial`;
+            ctx.fillStyle = color;
+            ctx.textBaseline = 'top';
+            
+            // Handle multi-line text and calculate bounds
+            const lines = text.split('\n');
+            let maxWidth = 0;
+            let totalHeight = lines.length * size * 1.2;
+            
+            lines.forEach((line, index) => {
+                const lineY = y + (index * size * 1.2);
+                ctx.fillText(line, x, lineY);
+                
+                // Track the widest line
+                const lineWidth = ctx.measureText(line).width;
+                if (lineWidth > maxWidth) maxWidth = lineWidth;
+            });
+            
+            // Store text region for future clearing (if this is live text)
+            if (textId) {
+                if (!window.textRegions) window.textRegions = new Map();
+                window.textRegions.set(textId, {
+                    x: x,
+                    y: y,
+                    width: maxWidth,
+                    height: totalHeight
+                });
+            }
+            
+            ctx.restore();
+        }
+        
+        // Handle remote drawing with proper path management
+        function drawRemoteLine(data) {
+            const prevComposite = ctx.globalCompositeOperation;
+            const prevStroke = ctx.strokeStyle;
+            const prevWidth = ctx.lineWidth;
+            
+            ctx.lineWidth = data.size || 5;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            if (data.tool === 'pen') {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = data.color || '#000000';
+            } else if (data.tool === 'eraser') {
+                ctx.globalCompositeOperation = 'destination-out';
+            }
+            
+            // Handle different drawing events
+            if (data.type === 'start') {
+                // Start new path at this position
+                ctx.beginPath();
+                ctx.moveTo(data.x, data.y);
+                
+                // Store last point for this user
+                if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
+                window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
+                
+            } else if (data.type === 'draw') {
+                // Continue drawing to this position
+                const lastPoint = window.remoteLastPoints?.get(data.userId);
+                
+                ctx.beginPath();
+                if (lastPoint) {
+                    ctx.moveTo(lastPoint.x, lastPoint.y);
+                    ctx.lineTo(data.x, data.y);
+                } else {
+                    ctx.moveTo(data.x, data.y);
+                }
+                ctx.stroke();
+                
+                // Update last point
+                if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
+                window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
+                
+            } else if (data.type === 'stop') {
+                // End the current path
+                if (window.remoteLastPoints) {
+                    window.remoteLastPoints.delete(data.userId);
+                }
+                ctx.beginPath();
+            }
+            
+            // Restore previous settings
+            ctx.globalCompositeOperation = prevComposite;
+            ctx.strokeStyle = prevStroke;
+            ctx.lineWidth = prevWidth;
+        }
+        
+        // Event listeners for mouse, touch, and stylus input
+        function setupDrawingEventListeners() {
+            // Mouse events
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+            
+            // Touch events (tablets/phones)
+            canvas.addEventListener('touchstart', startDrawing, { passive: false });
+            canvas.addEventListener('touchmove', draw, { passive: false });
+            canvas.addEventListener('touchend', stopDrawing, { passive: false });
+            canvas.addEventListener('touchcancel', stopDrawing, { passive: false });
+            
+            // Pointer events (stylus/pen input)
+            if (window.PointerEvent) {
+                canvas.addEventListener('pointerdown', startDrawing);
+                canvas.addEventListener('pointermove', draw);
+                canvas.addEventListener('pointerup', stopDrawing);
+                canvas.addEventListener('pointercancel', stopDrawing);
+                canvas.addEventListener('pointerout', stopDrawing);
+                
+                // Enable stylus/pen specific features
+                canvas.style.touchAction = 'none'; // Prevent scrolling during drawing
+            }
+            
+            console.log('Drawing event listeners setup complete');
+        }
+        
+        // Socket listeners for drawing and text
+        socket.on('drawing', (data) => {
+            drawRemoteLine(data);
+        });
+        
+        socket.on('text-started', (data) => {
+            console.log(`${data.username} started typing text`);
+        });
+        
+        socket.on('text-typing', (data) => {
+            // Show live text as remote user types
+            drawTextOnCanvas(data.x, data.y, data.text, data.color, data.size, data.id);
+        });
+        
+        socket.on('text-completed', (data) => {
+            // Final text placement
+            drawTextOnCanvas(data.x, data.y, data.text, data.color, data.size);
+            
+            // Clean up any live text regions for this text
+            if (window.textRegions) {
+                window.textRegions.delete(data.id);
+            }
+            
+            if (data.text.length > 0) {
+                addChatMessage('System', `📝 ${data.username} added text: "${data.text.substring(0, 30)}${data.text.length > 30 ? '...' : ''}"`);
+            }
+        });
+        
+        socket.on('session-started', (data) => {
+            enterWhiteboard();
+            // Get initial participant list
+            if (data.participants) {
+                updateSessionParticipants(data.participants);
+            }
+        });
+        
+        socket.on('participant-joined-session', (data) => {
+            updateSessionParticipants(data.participants);
+            addChatMessage('System', `👋 ${data.username} joined the session`);
+        });
+        
+        socket.on('participant-left-session', (data) => {
+            updateSessionParticipants(data.participants);
+            addChatMessage('System', `👋 ${data.username} left the session`);
+        });
+        
+        socket.on('chat-message', (data) => {
+            addChatMessage(data.username, data.message);
+        });
+        
+        socket.on('background-image', (data) => {
+            const img = new Image();
+            img.onload = function() {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            };
+            img.src = data.dataUrl;
+        });
+        
+        // Tool controls
+        document.getElementById('colorPicker').addEventListener('change', (e) => {
+            currentColor = e.target.value;
+        });
+        
+        document.getElementById('sizeSlider').addEventListener('input', (e) => {
+            currentSize = e.target.value;
+            document.getElementById('sizeDisplay').textContent = e.target.value + 'px';
+        });
+        
+        document.getElementById('chatInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        window.addEventListener('resize', () => {
+            if (sessionStarted) resizeCanvas();
+        });
+        
+        // Initialize
+        console.log('Collaborative Whiteboard with Lobby System Ready!');
+    </script>
+</body>
+</html>
