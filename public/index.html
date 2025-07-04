@@ -1,4 +1,49 @@
-<!DOCTYPE html>
+socket.on('text-typing', (data) => {
+            // Show live text as remote user types using virtual coordinates
+            drawTextOnVirtualCanvas(data.x, data.y, data.text, data.color, data.size, data.id);
+        });
+        
+        socket.on('text-completed', (data) => {
+            // Final text placement using virtual coordinates
+            drawTextOnVirtualCanvas(data.x, data.y, data.text, data.color, data.size);
+            
+            // Store the text in our drawing history
+            if (data.text.length > 0) {
+                if (!window.storedDrawings) window.storedDrawings = [];
+                window.storedDrawings.push({
+                    type: 'text',
+                    x: data.x,
+                    y: data.y,
+                    text: data.text,
+                    color: data.color,
+                    size: data.size,
+                    username: data.username,
+                    timestamp: data.timestamp
+                });
+                
+                addChatMessage('System', `📝 ${data.username} added text: "${data.text.substring(0, 30)}${data.text.length > 30 ? '...' : ''}"`);
+            }
+            
+            // Clean up any live text regions for this text
+            if (window.liveTextRegions) {
+                window.liveTextRegions.delete(data.id);
+            }
+        });
+        
+        socket.on('clear-canvas', (data) => {
+            clearCanvas();
+            addChatMessage('System', `🗑️ Canvas cleared by ${data.clearedBy || 'someone'}`);
+        });
+        
+        socket.on('background-image', (data) => {
+            const img = new Image();
+            img.onload = function() {
+                backgroundImage = img;
+                redrawCanvas();
+                addChatMessage('System', `📁 Background updated: ${data.filename}`);
+            };
+            img.src = data.dataUrl;
+        });<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -831,11 +876,18 @@
                 document.getElementById('recordingPanel').style.display = 'block';
             }
             
+            // Initialize canvas with universal coordinate system
             resizeCanvas();
-            setupDrawingEventListeners(); // Initialize drawing events
+            setupDrawingEventListeners();
             sessionStarted = true;
             
-            console.log('Entered whiteboard, session started');
+            // Initialize storage arrays
+            if (!window.storedDrawings) window.storedDrawings = [];
+            if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
+            if (!window.liveTextRegions) window.liveTextRegions = new Map();
+            if (!window.remoteStrokes) window.remoteStrokes = new Map();
+            
+            console.log('Entered whiteboard with universal coordinate system');
         }
         
         function resizeCanvas() {
@@ -1180,19 +1232,20 @@
             });
         }
         
-        // Text functionality with live typing
+        // Text functionality with universal coordinates
         function addTextBox(e) {
             if (!sessionStarted) return;
             
-            const coords = getCanvasCoordinates(e);
+            const coords = getVirtualCoordinates(e);
+            const canvasCoords = virtualToCanvas(coords.x, coords.y);
             const textId = Date.now().toString();
             
             const textInput = document.createElement('textarea');
             textInput.className = 'text-input';
             textInput.id = `text-${textId}`;
             textInput.placeholder = 'Type text here...';
-            textInput.style.left = (coords.x / canvas.width * 100) + '%';
-            textInput.style.top = (coords.y / canvas.height * 100) + '%';
+            textInput.style.left = (canvasCoords.x / canvas.width * 100) + '%';
+            textInput.style.top = (canvasCoords.y / canvas.height * 100) + '%';
             textInput.style.fontSize = Math.max(12, currentSize) + 'px';
             textInput.style.color = currentColor;
             
@@ -1201,15 +1254,15 @@
             textInput.addEventListener('input', () => {
                 clearTimeout(typingTimer);
                 
-                // Update canvas immediately
+                // Update canvas immediately using virtual coordinates
                 const currentText = textInput.value;
-                drawTextOnCanvas(coords.x, coords.y, currentText, currentColor, Math.max(12, currentSize), textId);
+                drawTextOnVirtualCanvas(coords.x, coords.y, currentText, currentColor, Math.max(12, currentSize), textId);
                 
                 // Emit live text update with debouncing
                 typingTimer = setTimeout(() => {
                     socket.emit('text-typing', {
                         id: textId,
-                        x: coords.x,
+                        x: coords.x, // Virtual coordinates
                         y: coords.y,
                         text: currentText,
                         color: currentColor,
@@ -1217,7 +1270,7 @@
                         username: username,
                         timestamp: Date.now()
                     });
-                }, 100); // Small delay to avoid spam
+                }, 100);
             });
             
             // Handle text completion
@@ -1232,7 +1285,7 @@
             document.getElementById('textInputOverlay').appendChild(textInput);
             activeTextInputs.set(textId, { 
                 element: textInput, 
-                coords: coords,
+                coords: coords, // Store virtual coordinates
                 lastText: ''
             });
             
@@ -1256,8 +1309,23 @@
             if (!textData) return;
             
             const textInput = textData.element;
-            const coords = textData.coords;
+            const coords = textData.coords; // Virtual coordinates
             const text = textInput.value.trim();
+            
+            // Store completed text
+            if (text) {
+                if (!window.storedDrawings) window.storedDrawings = [];
+                window.storedDrawings.push({
+                    type: 'text',
+                    x: coords.x,
+                    y: coords.y,
+                    text: text,
+                    color: currentColor,
+                    size: Math.max(12, currentSize),
+                    username: username,
+                    timestamp: Date.now()
+                });
+            }
             
             // Emit completion
             socket.emit('text-completed', {
@@ -1276,23 +1344,26 @@
             activeTextInputs.delete(textId);
         }
         
-        function drawTextOnCanvas(x, y, text, color, size, textId = null) {
-            // If this is a live text update, clear the previous version first
-            if (textId && window.textRegions) {
-                const previousRegion = window.textRegions.get(textId);
-                if (previousRegion) {
-                    // Clear the area where the previous text was
-                    ctx.save();
-                    ctx.globalCompositeOperation = 'destination-out';
-                    ctx.fillRect(previousRegion.x - 2, previousRegion.y - 2, 
-                               previousRegion.width + 4, previousRegion.height + 4);
-                    ctx.restore();
-                }
-            }
-            
+        function drawTextOnVirtualCanvas(virtualX, virtualY, text, color, size, textId = null) {
             if (!text) return;
             
             ctx.save();
+            
+            // Set up virtual coordinate system
+            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
+            ctx.scale(canvas.virtualScale, canvas.virtualScale);
+            
+            // Clear previous text if this is a live update
+            if (textId && window.liveTextRegions) {
+                const previousRegion = window.liveTextRegions.get(textId);
+                if (previousRegion) {
+                    ctx.globalCompositeOperation = 'destination-out';
+                    ctx.fillRect(previousRegion.x - 2, previousRegion.y - 2, 
+                               previousRegion.width + 4, previousRegion.height + 4);
+                }
+            }
+            
+            ctx.globalCompositeOperation = 'source-over';
             ctx.font = `${size}px Arial`;
             ctx.fillStyle = color;
             ctx.textBaseline = 'top';
@@ -1303,8 +1374,8 @@
             let totalHeight = lines.length * size * 1.2;
             
             lines.forEach((line, index) => {
-                const lineY = y + (index * size * 1.2);
-                ctx.fillText(line, x, lineY);
+                const lineY = virtualY + (index * size * 1.2);
+                ctx.fillText(line, virtualX, lineY);
                 
                 // Track the widest line
                 const lineWidth = ctx.measureText(line).width;
@@ -1313,10 +1384,10 @@
             
             // Store text region for future clearing (if this is live text)
             if (textId) {
-                if (!window.textRegions) window.textRegions = new Map();
-                window.textRegions.set(textId, {
-                    x: x,
-                    y: y,
+                if (!window.liveTextRegions) window.liveTextRegions = new Map();
+                window.liveTextRegions.set(textId, {
+                    x: virtualX,
+                    y: virtualY,
                     width: maxWidth,
                     height: totalHeight
                 });
@@ -1325,11 +1396,15 @@
             ctx.restore();
         }
         
-        // Handle remote drawing with proper path management
+        // Handle remote drawing with universal coordinates
         function drawRemoteLine(data) {
-            const prevComposite = ctx.globalCompositeOperation;
-            const prevStroke = ctx.strokeStyle;
-            const prevWidth = ctx.lineWidth;
+            if (!sessionStarted) return;
+            
+            ctx.save();
+            
+            // Set up virtual coordinate system  
+            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
+            ctx.scale(canvas.virtualScale, canvas.virtualScale);
             
             ctx.lineWidth = data.size || 5;
             ctx.lineCap = 'round';
@@ -1352,6 +1427,19 @@
                 if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
                 window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
                 
+                // Start tracking this stroke
+                if (!window.remoteStrokes) window.remoteStrokes = new Map();
+                window.remoteStrokes.set(data.userId, {
+                    type: 'drawing',
+                    tool: data.tool,
+                    color: data.color,
+                    size: data.size,
+                    points: [{ x: data.x, y: data.y }],
+                    userId: data.userId,
+                    username: data.username,
+                    timestamp: data.timestamp
+                });
+                
             } else if (data.type === 'draw') {
                 // Continue drawing to this position
                 const lastPoint = window.remoteLastPoints?.get(data.userId);
@@ -1365,22 +1453,44 @@
                 }
                 ctx.stroke();
                 
-                // Update last point
+                // Update last point and stroke
                 if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
                 window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
                 
+                if (window.remoteStrokes && window.remoteStrokes.has(data.userId)) {
+                    window.remoteStrokes.get(data.userId).points.push({ x: data.x, y: data.y });
+                }
+                
             } else if (data.type === 'stop') {
-                // End the current path
+                // End the current path and store it
                 if (window.remoteLastPoints) {
                     window.remoteLastPoints.delete(data.userId);
                 }
+                
+                if (window.remoteStrokes && window.remoteStrokes.has(data.userId)) {
+                    const stroke = window.remoteStrokes.get(data.userId);
+                    if (!window.storedDrawings) window.storedDrawings = [];
+                    window.storedDrawings.push(stroke);
+                    window.remoteStrokes.delete(data.userId);
+                }
+                
                 ctx.beginPath();
             }
             
-            // Restore previous settings
-            ctx.globalCompositeOperation = prevComposite;
-            ctx.strokeStyle = prevStroke;
-            ctx.lineWidth = prevWidth;
+            ctx.restore();
+        }
+        
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            socket.emit('clear-canvas');
+            
+            // Clear all tracking data
+            if (window.remoteLastPoints) window.remoteLastPoints.clear();
+            if (window.liveTextRegions) window.liveTextRegions.clear();
+            if (window.storedDrawings) window.storedDrawings = [];
+            if (window.remoteStrokes) window.remoteStrokes.clear();
+            
+            console.log('Canvas cleared with universal coordinates');
         }
         
         // Event listeners for mouse, touch, and stylus input
