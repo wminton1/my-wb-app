@@ -1,13 +1,625 @@
-socket.on('text-typing', (data) => {
-            // Show live text as remote user types using virtual coordinates
+if (isHost) {
+                currentRoom = roomInput || generateRoomCode();
+                socket.emit('create-room', { roomId: currentRoom, username, role: 'host' });
+            } else {
+                if (!roomInput) {
+                    alert('Please enter a room code');
+                    return;
+                }
+                currentRoom = roomInput.toUpperCase();
+                socket.emit('join-room', { roomId: currentRoom, username, role: 'participant' });
+            }
+        }
+        
+        function showLobby() {
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('lobbyScreen').style.display = 'flex';
+            document.getElementById('lobbyRoomCode').textContent = currentRoom;
+            
+            if (isHost) {
+                document.getElementById('startSessionBtn').style.display = 'block';
+                document.getElementById('lobbyStatus').textContent = 'You can start the session when ready';
+            } else {
+                document.getElementById('readyToggle').style.display = 'block';
+                document.getElementById('lobbyStatus').textContent = 'Waiting for host to start session...';
+            }
+        }
+        
+        function updateLobbyParticipants(participants) {
+            const container = document.getElementById('lobbyParticipants');
+            const count = document.getElementById('lobbyParticipantCount');
+            
+            container.innerHTML = '';
+            count.textContent = `${participants.length} joined`;
+            
+            participants.forEach(participant => {
+                const card = document.createElement('div');
+                card.className = `participant-card ${participant.role}`;
+                if (participant.ready) card.classList.add('ready');
+                
+                const avatar = document.createElement('div');
+                avatar.className = 'participant-avatar';
+                avatar.style.backgroundColor = `hsl(${participant.username.charCodeAt(0) * 137.508}%, 70%, 50%)`;
+                avatar.textContent = participant.username.charAt(0).toUpperCase();
+                
+                const name = document.createElement('div');
+                name.className = 'participant-name';
+                name.textContent = participant.username;
+                
+                const role = document.createElement('div');
+                role.className = 'participant-role';
+                role.textContent = participant.role;
+                
+                card.appendChild(avatar);
+                card.appendChild(name);
+                card.appendChild(role);
+                
+                if (participant.ready && participant.role === 'participant') {
+                    const readyBadge = document.createElement('div');
+                    readyBadge.textContent = '✓ Ready';
+                    readyBadge.style.cssText = 'color: #4caf50; font-weight: 600; font-size: 0.8rem; margin-top: 0.25rem;';
+                    card.appendChild(readyBadge);
+                }
+                
+                container.appendChild(card);
+            });
+        }
+        
+        function toggleReady() {
+            isReady = !isReady;
+            const btn = document.getElementById('readyToggle');
+            
+            if (isReady) {
+                btn.textContent = '✓ Ready';
+                btn.classList.remove('not-ready');
+            } else {
+                btn.textContent = 'Not Ready';
+                btn.classList.add('not-ready');
+            }
+            
+            socket.emit('toggle-ready', { ready: isReady });
+        }
+        
+        function startSession() {
+            if (!isHost) return;
+            socket.emit('start-session');
+        }
+        
+        function leaveLobby() {
+            socket.emit('leave-room');
+            window.location.reload();
+        }
+        
+        function enterWhiteboard() {
+            document.getElementById('lobbyScreen').style.display = 'none';
+            const mainApp = document.getElementById('mainApp');
+            mainApp.style.display = 'grid';
+            mainApp.classList.add('active');
+            
+            document.getElementById('currentRoom').textContent = currentRoom;
+            document.getElementById('userRole').textContent = isHost ? 'Host' : 'Participant';
+            
+            if (isHost) {
+                document.getElementById('hostControls').style.display = 'flex';
+                document.getElementById('recordingPanel').style.display = 'block';
+            }
+            
+            resizeCanvas();
+            setupDrawingEventListeners();
+            sessionStarted = true;
+            
+            // Initialize storage arrays
+            if (!window.storedDrawings) window.storedDrawings = [];
+            if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
+            if (!window.liveTextRegions) window.liveTextRegions = new Map();
+            if (!window.remoteStrokes) window.remoteStrokes = new Map();
+        }
+        
+        function setTool(tool) {
+            currentTool = tool;
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(tool + 'Tool').classList.add('active');
+            
+            if (tool === 'eraser') {
+                canvas.style.cursor = 'grab';
+            } else if (tool === 'text') {
+                canvas.style.cursor = 'text';
+            } else {
+                canvas.style.cursor = 'crosshair';
+            }
+        }
+        
+        // Drawing functions with universal coordinates
+        function startDrawing(e) {
+            e.preventDefault();
+            
+            if (currentTool === 'text') {
+                addTextBox(e);
+                return;
+            }
+            
+            if (!sessionStarted) return;
+            
+            isDrawing = true;
+            const coords = getVirtualCoordinates(e);
+            lastPoint = coords;
+            
+            currentStroke = {
+                type: 'drawing',
+                tool: currentTool,
+                color: currentColor,
+                size: currentSize,
+                points: [coords],
+                userId: socket.id,
+                username: username,
+                timestamp: Date.now()
+            };
+            
+            drawOnCanvas(coords, 'start');
+            
+            socket.emit('drawing', {
+                x: coords.x,
+                y: coords.y,
+                color: currentColor,
+                size: currentSize,
+                tool: currentTool,
+                type: 'start'
+            });
+        }
+        
+        function draw(e) {
+            e.preventDefault();
+            
+            if (!isDrawing || !sessionStarted || currentTool === 'text') return;
+            
+            const coords = getVirtualCoordinates(e);
+            
+            if (currentStroke) {
+                currentStroke.points.push(coords);
+            }
+            
+            drawOnCanvas(coords, 'draw');
+            lastPoint = coords;
+            
+            socket.emit('drawing', {
+                x: coords.x,
+                y: coords.y,
+                color: currentColor,
+                size: currentSize,
+                tool: currentTool,
+                type: 'draw'
+            });
+        }
+        
+        function stopDrawing(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+            
+            isDrawing = false;
+            lastPoint = null;
+            
+            if (currentStroke && currentStroke.points.length > 0) {
+                if (!window.storedDrawings) window.storedDrawings = [];
+                window.storedDrawings.push(currentStroke);
+            }
+            currentStroke = null;
+            
+            socket.emit('drawing', { type: 'stop' });
+        }
+        
+        function drawOnCanvas(coords, type) {
+            ctx.save();
+            
+            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
+            ctx.scale(canvas.virtualScale, canvas.virtualScale);
+            
+            ctx.lineWidth = currentSize;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            if (currentTool === 'pen') {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = currentColor;
+            } else if (currentTool === 'eraser') {
+                ctx.globalCompositeOperation = 'destination-out';
+            }
+            
+            if (type === 'start') {
+                ctx.beginPath();
+                ctx.moveTo(coords.x, coords.y);
+            } else if (lastPoint) {
+                ctx.beginPath();
+                ctx.moveTo(lastPoint.x, lastPoint.y);
+                ctx.lineTo(coords.x, coords.y);
+                ctx.stroke();
+            }
+            
+            ctx.restore();
+        }
+        
+        // Text functionality with universal coordinates
+        function addTextBox(e) {
+            if (!sessionStarted) return;
+            
+            const coords = getVirtualCoordinates(e);
+            const canvasCoords = virtualToCanvas(coords.x, coords.y);
+            const textId = Date.now().toString();
+            
+            const textInput = document.createElement('textarea');
+            textInput.className = 'text-input';
+            textInput.id = `text-${textId}`;
+            textInput.placeholder = 'Type text here...';
+            textInput.style.left = (canvasCoords.x / canvas.width * 100) + '%';
+            textInput.style.top = (canvasCoords.y / canvas.height * 100) + '%';
+            textInput.style.fontSize = Math.max(12, currentSize) + 'px';
+            textInput.style.color = currentColor;
+            
+            let typingTimer;
+            textInput.addEventListener('input', () => {
+                clearTimeout(typingTimer);
+                
+                const currentText = textInput.value;
+                drawTextOnVirtualCanvas(coords.x, coords.y, currentText, currentColor, Math.max(12, currentSize), textId);
+                
+                typingTimer = setTimeout(() => {
+                    socket.emit('text-typing', {
+                        id: textId,
+                        x: coords.x,
+                        y: coords.y,
+                        text: currentText,
+                        color: currentColor,
+                        size: Math.max(12, currentSize),
+                        username: username,
+                        timestamp: Date.now()
+                    });
+                }, 100);
+            });
+            
+            textInput.addEventListener('blur', () => finishTextInput(textId));
+            textInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    finishTextInput(textId);
+                }
+                e.stopPropagation();
+            });
+            
+            document.getElementById('textInputOverlay').appendChild(textInput);
+            activeTextInputs.set(textId, { 
+                element: textInput, 
+                coords: coords,
+                lastText: ''
+            });
+            
+            setTimeout(() => textInput.focus(), 10);
+            
+            socket.emit('text-started', {
+                id: textId,
+                x: coords.x,
+                y: coords.y,
+                color: currentColor,
+                size: Math.max(12, currentSize),
+                username: username,
+                timestamp: Date.now()
+            });
+        }
+        
+        function finishTextInput(textId) {
+            const textData = activeTextInputs.get(textId);
+            if (!textData) return;
+            
+            const textInput = textData.element;
+            const coords = textData.coords;
+            const text = textInput.value.trim();
+            
+            if (text) {
+                if (!window.storedDrawings) window.storedDrawings = [];
+                window.storedDrawings.push({
+                    type: 'text',
+                    x: coords.x,
+                    y: coords.y,
+                    text: text,
+                    color: currentColor,
+                    size: Math.max(12, currentSize),
+                    username: username,
+                    timestamp: Date.now()
+                });
+            }
+            
+            socket.emit('text-completed', {
+                id: textId,
+                x: coords.x,
+                y: coords.y,
+                text: text,
+                color: currentColor,
+                size: Math.max(12, currentSize),
+                username: username,
+                timestamp: Date.now()
+            });
+            
+            textInput.remove();
+            activeTextInputs.delete(textId);
+        }
+        
+        function drawTextOnVirtualCanvas(virtualX, virtualY, text, color, size, textId = null) {
+            if (!text) return;
+            
+            ctx.save();
+            
+            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
+            ctx.scale(canvas.virtualScale, canvas.virtualScale);
+            
+            if (textId && window.liveTextRegions) {
+                const previousRegion = window.liveTextRegions.get(textId);
+                if (previousRegion) {
+                    ctx.globalCompositeOperation = 'destination-out';
+                    ctx.fillRect(previousRegion.x - 2, previousRegion.y - 2, 
+                               previousRegion.width + 4, previousRegion.height + 4);
+                }
+            }
+            
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.font = `${size}px Arial`;
+            ctx.fillStyle = color;
+            ctx.textBaseline = 'top';
+            
+            const lines = text.split('\n');
+            let maxWidth = 0;
+            let totalHeight = lines.length * size * 1.2;
+            
+            lines.forEach((line, index) => {
+                const lineY = virtualY + (index * size * 1.2);
+                ctx.fillText(line, virtualX, lineY);
+                
+                const lineWidth = ctx.measureText(line).width;
+                if (lineWidth > maxWidth) maxWidth = lineWidth;
+            });
+            
+            if (textId) {
+                if (!window.liveTextRegions) window.liveTextRegions = new Map();
+                window.liveTextRegions.set(textId, {
+                    x: virtualX,
+                    y: virtualY,
+                    width: maxWidth,
+                    height: totalHeight
+                });
+            }
+            
+            ctx.restore();
+        }
+        
+        function drawRemoteLine(data) {
+            if (!sessionStarted) return;
+            
+            ctx.save();
+            
+            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
+            ctx.scale(canvas.virtualScale, canvas.virtualScale);
+            
+            ctx.lineWidth = data.size || 5;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            if (data.tool === 'pen') {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = data.color || '#000000';
+            } else if (data.tool === 'eraser') {
+                ctx.globalCompositeOperation = 'destination-out';
+            }
+            
+            if (data.type === 'start') {
+                ctx.beginPath();
+                ctx.moveTo(data.x, data.y);
+                
+                if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
+                window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
+                
+            } else if (data.type === 'draw') {
+                const lastPoint = window.remoteLastPoints?.get(data.userId);
+                
+                ctx.beginPath();
+                if (lastPoint) {
+                    ctx.moveTo(lastPoint.x, lastPoint.y);
+                    ctx.lineTo(data.x, data.y);
+                } else {
+                    ctx.moveTo(data.x, data.y);
+                }
+                ctx.stroke();
+                
+                if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
+                window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
+                
+            } else if (data.type === 'stop') {
+                if (window.remoteLastPoints) {
+                    window.remoteLastPoints.delete(data.userId);
+                }
+                ctx.beginPath();
+            }
+            
+            ctx.restore();
+        }
+        
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            socket.emit('clear-canvas');
+            
+            if (window.remoteLastPoints) window.remoteLastPoints.clear();
+            if (window.liveTextRegions) window.liveTextRegions.clear();
+            if (window.storedDrawings) window.storedDrawings = [];
+            if (window.remoteStrokes) window.remoteStrokes.clear();
+        }
+        
+        function updateSessionParticipants(participants) {
+            sessionParticipants.clear();
+            participants.forEach(p => {
+                sessionParticipants.set(p.id, p);
+            });
+            
+            const usersList = document.getElementById('usersList');
+            if (usersList) {
+                usersList.innerHTML = participants.map(participant => {
+                    const roleIcon = participant.role === 'host' ? '🎯' : '👥';
+                    const roleColor = participant.role === 'host' ? '#ff9800' : '#4285f4';
+                    
+                    return `
+                        <div style="
+                            padding: 0.5rem;
+                            margin: 0.25rem 0;
+                            background: ${participant.role === 'host' ? 'linear-gradient(135deg, #fff3e0, #ffe0b2)' : 'linear-gradient(135deg, #e3f2fd, #bbdefb)'};
+                            border-radius: 8px;
+                            border-left: 3px solid ${roleColor};
+                            font-size: 14px;
+                            display: flex;
+                            align-items: center;
+                            gap: 0.5rem;
+                        ">
+                            <span style="font-size: 16px;">${roleIcon}</span>
+                            <div>
+                                <div style="font-weight: 600;">${participant.username}</div>
+                                <div style="font-size: 11px; color: #666; text-transform: uppercase;">${participant.role}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            const participantCount = document.getElementById('participantCount');
+            if (participantCount) {
+                const count = participants.length;
+                participantCount.textContent = `${count} participant${count !== 1 ? 's' : ''}`;
+            }
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (message) {
+                addChatMessage(username, message);
+                socket.emit('chat-message', message);
+                input.value = '';
+            }
+        }
+        
+        function addChatMessage(sender, message) {
+            const chatMessages = document.getElementById('chatMessages');
+            const messageElement = document.createElement('div');
+            messageElement.style.cssText = 'margin-bottom: 0.5rem; font-size: 14px;';
+            
+            const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            if (sender === 'System') {
+                messageElement.innerHTML = `<em style="color: #666;">[${timestamp}] ${message}</em>`;
+            } else {
+                const roleIcon = isHost && sender === username ? '🎯' : '👥';
+                messageElement.innerHTML = `
+                    <span style="color: #999; font-size: 11px;">[${timestamp}]</span>
+                    <span style="font-weight: 600; color: #4285f4;">${roleIcon} ${sender}:</span> ${message}
+                `;
+            }
+            
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        function setupDrawingEventListeners() {
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+            
+            canvas.addEventListener('touchstart', startDrawing, { passive: false });
+            canvas.addEventListener('touchmove', draw, { passive: false });
+            canvas.addEventListener('touchend', stopDrawing, { passive: false });
+            canvas.addEventListener('touchcancel', stopDrawing, { passive: false });
+            
+            if (window.PointerEvent) {
+                canvas.addEventListener('pointerdown', startDrawing);
+                canvas.addEventListener('pointermove', draw);
+                canvas.addEventListener('pointerup', stopDrawing);
+                canvas.addEventListener('pointercancel', stopDrawing);
+                canvas.addEventListener('pointerout', stopDrawing);
+                
+                canvas.style.touchAction = 'none';
+            }
+        }
+        
+        // Socket event listeners
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+        
+        socket.on('error', (data) => {
+            console.error('Server error:', data);
+            alert(`Error: ${data.message}`);
+        });
+        
+        socket.on('room-created', (data) => {
+            showLobby();
+            updateLobbyParticipants(data.participants);
+        });
+        
+        socket.on('room-joined', (data) => {
+            showLobby();
+            updateLobbyParticipants(data.participants);
+        });
+        
+        socket.on('room-exists', () => {
+            alert('Room code already exists. Please choose a different name.');
+        });
+        
+        socket.on('room-not-found', () => {
+            alert('Room not found. Please check the room code.');
+        });
+        
+        socket.on('room-full', () => {
+            alert('Room is full. Please try another room.');
+        });
+        
+        socket.on('lobby-updated', (data) => {
+            updateLobbyParticipants(data.participants);
+        });
+        
+        socket.on('session-starting', () => {
+            document.getElementById('lobbyStatus').textContent = 'Session starting...';
+            setTimeout(enterWhiteboard, 1000);
+        });
+        
+        socket.on('session-started', (data) => {
+            enterWhiteboard();
+            if (data.participants) {
+                updateSessionParticipants(data.participants);
+            }
+        });
+        
+        socket.on('participant-joined-session', (data) => {
+            updateSessionParticipants(data.participants);
+            addChatMessage('System', `👋 ${data.username} joined the session`);
+        });
+        
+        socket.on('participant-left-session', (data) => {
+            updateSessionParticipants(data.participants);
+            addChatMessage('System', `👋 ${data.username} left the session`);
+        });
+        
+        socket.on('room-ended', (data) => {
+            alert(`Room ended: ${data.reason}`);
+            window.location.reload();
+        });
+        
+        socket.on('drawing', (data) => {
+            drawRemoteLine(data);
+        });
+        
+        socket.on('text-started', (data) => {
+            console.log(`${data.username} started typing text`);
+        });
+        
+        socket.on('text-typing', (data) => {
             drawTextOnVirtualCanvas(data.x, data.y, data.text, data.color, data.size, data.id);
         });
         
         socket.on('text-completed', (data) => {
-            // Final text placement using virtual coordinates
             drawTextOnVirtualCanvas(data.x, data.y, data.text, data.color, data.size);
             
-            // Store the text in our drawing history
             if (data.text.length > 0) {
                 if (!window.storedDrawings) window.storedDrawings = [];
                 window.storedDrawings.push({
@@ -24,7 +636,6 @@ socket.on('text-typing', (data) => {
                 addChatMessage('System', `📝 ${data.username} added text: "${data.text.substring(0, 30)}${data.text.length > 30 ? '...' : ''}"`);
             }
             
-            // Clean up any live text regions for this text
             if (window.liveTextRegions) {
                 window.liveTextRegions.delete(data.id);
             }
@@ -43,7 +654,112 @@ socket.on('text-typing', (data) => {
                 addChatMessage('System', `📁 Background updated: ${data.filename}`);
             };
             img.src = data.dataUrl;
-        });<!DOCTYPE html>
+        });
+        
+        socket.on('chat-message', (data) => {
+            addChatMessage(data.username, data.message);
+        });
+        
+        // Tool controls
+        document.getElementById('colorPicker').addEventListener('change', (e) => {
+            currentColor = e.target.value;
+        });
+        
+        document.getElementById('sizeSlider').addEventListener('input', (e) => {
+            currentSize = e.target.value;
+            document.getElementById('sizeDisplay').textContent = e.target.value + 'px';
+        });
+        
+        document.getElementById('chatInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        window.addEventListener('resize', () => {
+            if (sessionStarted) resizeCanvas();
+        });
+        
+        // Placeholder functions
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                if (file.type.startsWith('image/')) {
+                    const img = new Image();
+                    img.onload = function() {
+                        backgroundImage = img;
+                        redrawCanvas();
+                        socket.emit('background-image', { dataUrl: e.target.result, filename: file.name });
+                        addChatMessage('System', `📁 Background updated: ${file.name}`);
+                    };
+                    img.src = e.target.result;
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function takeScreenshot() {
+            const link = document.createElement('a');
+            link.download = `whiteboard-${currentRoom}-${new Date().toISOString().slice(0, 19)}.png`;
+            link.href = canvas.toDataURL();
+            link.click();
+            addChatMessage('System', '📸 Screenshot saved');
+        }
+        
+        function toggleRecording() {
+            const btn = document.getElementById('recordBtn');
+            const info = document.getElementById('recordingInfo');
+            
+            if (btn.textContent.includes('Start')) {
+                btn.textContent = '⏹️ Stop Recording';
+                btn.style.background = '#f44336';
+                info.style.display = 'block';
+                addChatMessage('System', '🎙️ Recording started');
+            } else {
+                btn.textContent = '🎙️ Start Recording';
+                btn.style.background = '#4285f4';
+                info.style.display = 'none';
+                addChatMessage('System', '⏹️ Recording stopped');
+            }
+        }
+        
+        function toggleParticipantDrawing() {
+            if (!isHost) return;
+            
+            const btn = document.getElementById('drawingToggleText');
+            if (btn.textContent.includes('Allow')) {
+                btn.textContent = '🚫 Disable Drawing';
+                socket.emit('toggle-participant-drawing');
+                addChatMessage('System', 'Drawing disabled for participants');
+            } else {
+                btn.textContent = '🖊️ Allow Drawing';
+                socket.emit('toggle-participant-drawing');
+                addChatMessage('System', 'Drawing enabled for participants');
+            }
+        }
+        
+        function toggleParticipantChat() {
+            if (!isHost) return;
+            
+            const btn = document.getElementById('chatToggleText');
+            if (btn.textContent.includes('Allow')) {
+                btn.textContent = '🚫 Disable Chat';
+                socket.emit('toggle-participant-chat');
+                addChatMessage('System', 'Chat disabled for participants');
+            } else {
+                btn.textContent = '💬 Allow Chat';
+                socket.emit('toggle-participant-chat');
+                addChatMessage('System', 'Chat enabled for participants');
+            }
+        }
+        
+        console.log('Collaborative Whiteboard with Universal Coordinates Ready!');
+    </script>
+</body>
+</html><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -75,6 +791,14 @@ socket.on('text-typing', (data) => {
             height: 100vh;
             gap: 10px;
             padding: 10px;
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .app-container.active {
+            visibility: visible;
+            opacity: 1;
         }
 
         /* Login Screen */
@@ -88,7 +812,7 @@ socket.on('text-typing', (data) => {
             display: flex;
             justify-content: center;
             align-items: center;
-            z-index: 1000;
+            z-index: 2000;
         }
 
         .login-form {
@@ -99,6 +823,8 @@ socket.on('text-typing', (data) => {
             text-align: center;
             min-width: 450px;
             animation: slideIn 0.5s ease-out;
+            position: relative;
+            z-index: 2001;
         }
 
         @keyframes slideIn {
@@ -215,7 +941,7 @@ socket.on('text-typing', (data) => {
             display: none;
             justify-content: center;
             align-items: center;
-            z-index: 999;
+            z-index: 1999;
         }
 
         .lobby-container {
@@ -384,7 +1110,7 @@ socket.on('text-typing', (data) => {
             background: #9e9e9e;
         }
 
-        /* Main App Styles (simplified for space) */
+        /* Main App Styles */
         .toolbar {
             grid-area: toolbar;
             background: white;
@@ -423,8 +1149,24 @@ socket.on('text-typing', (data) => {
             color: white;
             transform: translateY(-1px);
         }
-
-        .host-controls {
+        
+        .tool-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .color-picker {
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        
+        .size-slider {
+            width: 100px;
+        }
             background: linear-gradient(135deg, #ff9800, #f57c00);
             color: white;
             border-radius: 8px;
@@ -472,6 +1214,11 @@ socket.on('text-typing', (data) => {
             resize: both;
             overflow: hidden;
         }
+        
+        .text-input:focus {
+            border-color: #1a73e8;
+            box-shadow: 0 0 8px rgba(26, 115, 232, 0.3);
+        }
 
         .user-cursors {
             position: absolute;
@@ -494,6 +1241,19 @@ socket.on('text-typing', (data) => {
         .user-cursor.host {
             border: 3px solid gold;
             box-shadow: 0 0 10px rgba(255, 215, 0, 0.7);
+        }
+        
+        .cursor-label {
+            position: absolute;
+            top: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            white-space: nowrap;
         }
 
         .left-panel, .right-panel {
@@ -520,6 +1280,12 @@ socket.on('text-typing', (data) => {
             border-radius: 8px;
             padding: 1rem;
         }
+        
+        .panel-section h3 {
+            margin-bottom: 1rem;
+            color: #333;
+            font-size: 1.1rem;
+        }
 
         .status-bar {
             grid-area: status;
@@ -533,6 +1299,26 @@ socket.on('text-typing', (data) => {
             font-size: 14px;
         }
 
+        /* Additional utility classes */
+        .file-input {
+            display: none;
+        }
+        
+        .canvas-disabled {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.5rem;
+            color: #666;
+            z-index: 10;
+        }
+        
         /* Responsive Design */
         @media (max-width: 1200px) {
             .app-container {
@@ -563,6 +1349,16 @@ socket.on('text-typing', (data) => {
             .participants-grid {
                 grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
             }
+            
+            .login-form {
+                min-width: 300px;
+                padding: 1.5rem;
+            }
+            
+            .role-selector {
+                flex-direction: column;
+                gap: 1rem;
+            }
         }
     </style>
 </head>
@@ -574,38 +1370,38 @@ socket.on('text-typing', (data) => {
                 <button class="tool-btn active" id="penTool" onclick="setTool('pen')">✏️ Pen</button>
                 <button class="tool-btn" id="eraserTool" onclick="setTool('eraser')">🧽 Eraser</button>
                 <button class="tool-btn" id="textTool" onclick="setTool('text')">📝 Text</button>
-                <button class="tool-btn" onclick="clearCanvas()">🗑️ Clear</button>
+                <button type="button" class="tool-btn" onclick="clearCanvas()">🗑️ Clear</button>
             </div>
             
             <div class="tool-group">
                 <input type="color" class="color-picker" id="colorPicker" value="#000000">
-                <label>Color</label>
+                <label for="colorPicker">Color</label>
             </div>
             
             <div class="tool-group">
                 <input type="range" class="size-slider" id="sizeSlider" min="2" max="50" value="5">
-                <span id="sizeDisplay">5px</span>
+                <label for="sizeSlider"><span id="sizeDisplay">5px</span></label>
             </div>
 
             <!-- File Upload -->
             <div class="tool-group">
-                <input type="file" id="fileInput" class="file-input" accept="image/*,.pdf,.ppt,.pptx" onchange="handleFileUpload(event)" style="display: none;">
-                <label for="fileInput" class="tool-btn" style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                <input type="file" id="fileInput" accept="image/*,.pdf,.ppt,.pptx" onchange="handleFileUpload(event)" style="display: none;">
+                <label for="fileInput" class="tool-btn" style="margin: 0; display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
                     📎 Add File
                 </label>
             </div>
 
             <!-- Screenshot -->
             <div class="tool-group">
-                <button class="tool-btn" onclick="takeScreenshot()">📸 Screenshot</button>
+                <button type="button" class="tool-btn" onclick="takeScreenshot()">📸 Screenshot</button>
             </div>
             
             <!-- Host Controls -->
             <div class="tool-group host-controls" id="hostControls" style="display: none;">
-                <button class="tool-btn" onclick="toggleParticipantDrawing()">
+                <button type="button" class="tool-btn" onclick="toggleParticipantDrawing()">
                     <span id="drawingToggleText">🖊️ Allow Drawing</span>
                 </button>
-                <button class="tool-btn" onclick="toggleParticipantChat()">
+                <button type="button" class="tool-btn" onclick="toggleParticipantChat()">
                     <span id="chatToggleText">💬 Allow Chat</span>
                 </button>
             </div>
@@ -630,7 +1426,7 @@ socket.on('text-typing', (data) => {
             <!-- Host Recording Controls -->
             <div class="panel-section" id="recordingPanel" style="display: none;">
                 <h3>🎥 Session Recording</h3>
-                <button id="recordBtn" onclick="toggleRecording()" style="width: 100%; padding: 12px; background: #4285f4; color: white; border: none; border-radius: 8px; font-weight: 600;">
+                <button type="button" id="recordBtn" onclick="toggleRecording()" style="width: 100%; padding: 12px; background: #4285f4; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer;">
                     🎙️ Start Recording
                 </button>
                 <div id="recordingInfo" style="display: none; text-align: center; margin-top: 1rem; color: #666;">
@@ -650,8 +1446,8 @@ socket.on('text-typing', (data) => {
                 <h3>💬 Chat</h3>
                 <div id="chatMessages" style="height: 150px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 0.7rem; background: white; margin-bottom: 0.5rem;"></div>
                 <div style="display: flex; gap: 0.5rem;">
-                    <input type="text" id="chatInput" placeholder="Type message..." style="flex: 1; padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px;">
-                    <button onclick="sendMessage()" style="padding: 10px 15px; background: #4285f4; color: white; border: none; border-radius: 8px;">Send</button>
+                    <input type="text" id="chatInput" placeholder="Type message..." maxlength="200" style="flex: 1; padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px;">
+                    <button type="button" onclick="sendMessage()" style="padding: 10px 15px; background: #4285f4; color: white; border: none; border-radius: 8px; cursor: pointer;">Send</button>
                 </div>
             </div>
         </div>
@@ -687,7 +1483,7 @@ socket.on('text-typing', (data) => {
             
             <input type="text" id="usernameInput" placeholder="Your display name" maxlength="25">
             <input type="text" id="roomIdInput" placeholder="Room code (leave empty to create new)" maxlength="20">
-            <button onclick="joinRoom()">Continue</button>
+            <button type="button" onclick="joinRoom()">Continue</button>
         </div>
     </div>
 
@@ -709,9 +1505,9 @@ socket.on('text-typing', (data) => {
             </div>
 
             <div class="lobby-controls">
-                <button class="lobby-btn secondary" onclick="leaveLobby()">Leave Room</button>
-                <button class="ready-toggle" id="readyToggle" onclick="toggleReady()" style="display: none;">Ready</button>
-                <button class="lobby-btn primary" id="startSessionBtn" onclick="startSession()" style="display: none;">Start Session</button>
+                <button type="button" class="lobby-btn secondary" onclick="leaveLobby()">Leave Room</button>
+                <button type="button" class="ready-toggle" id="readyToggle" onclick="toggleReady()" style="display: none;">Ready</button>
+                <button type="button" class="lobby-btn primary" id="startSessionBtn" onclick="startSession()" style="display: none;">Start Session</button>
             </div>
         </div>
     </div>
@@ -720,9 +1516,14 @@ socket.on('text-typing', (data) => {
         // Socket.io connection
         const socket = io();
         
-        // Canvas setup
+        // Canvas setup with universal coordinates
         const canvas = document.getElementById('whiteboard');
         const ctx = canvas.getContext('2d');
+        
+        // Canvas management with universal coordinates
+        let canvasScale = 1;
+        const VIRTUAL_WIDTH = 1920;  // Virtual canvas width
+        const VIRTUAL_HEIGHT = 1080; // Virtual canvas height
         
         // App state
         let currentTool = 'pen';
@@ -734,9 +1535,144 @@ socket.on('text-typing', (data) => {
         let isHost = false;
         let roomSettings = {};
         let lobbyParticipants = new Map();
-        let sessionParticipants = new Map(); // Track participants during session
+        let sessionParticipants = new Map();
         let isReady = false;
         let sessionStarted = false;
+        let backgroundImage = null;
+        
+        // Drawing state
+        let isDrawing = false;
+        let lastPoint = null;
+        let activeTextInputs = new Map();
+        let currentStroke = null;
+        
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            const rect = container.getBoundingClientRect();
+            
+            // Set actual canvas size to container
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+            
+            // Calculate scale factor to maintain aspect ratio
+            const scaleX = rect.width / VIRTUAL_WIDTH;
+            const scaleY = rect.height / VIRTUAL_HEIGHT;
+            canvasScale = Math.min(scaleX, scaleY);
+            
+            // Center the virtual canvas if needed
+            const scaledWidth = VIRTUAL_WIDTH * canvasScale;
+            const scaledHeight = VIRTUAL_HEIGHT * canvasScale;
+            const offsetX = (rect.width - scaledWidth) / 2;
+            const offsetY = (rect.height - scaledHeight) / 2;
+            
+            // Store offsets for coordinate conversion
+            canvas.virtualOffsetX = offsetX;
+            canvas.virtualOffsetY = offsetY;
+            canvas.virtualScale = canvasScale;
+            
+            // Redraw everything with new scale
+            redrawCanvas();
+        }
+        
+        function getVirtualCoordinates(e) {
+            const rect = canvas.getBoundingClientRect();
+            
+            // Handle touch/stylus events
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else if (e.changedTouches && e.changedTouches.length > 0) {
+                clientX = e.changedTouches[0].clientX;
+                clientY = e.changedTouches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            // Convert to canvas coordinates
+            const canvasX = clientX - rect.left;
+            const canvasY = clientY - rect.top;
+            
+            // Convert to virtual coordinates
+            const virtualX = (canvasX - canvas.virtualOffsetX) / canvas.virtualScale;
+            const virtualY = (canvasY - canvas.virtualOffsetY) / canvas.virtualScale;
+            
+            return {
+                x: Math.max(0, Math.min(VIRTUAL_WIDTH, virtualX)),
+                y: Math.max(0, Math.min(VIRTUAL_HEIGHT, virtualY))
+            };
+        }
+        
+        function virtualToCanvas(virtualX, virtualY) {
+            return {
+                x: virtualX * canvas.virtualScale + canvas.virtualOffsetX,
+                y: virtualY * canvas.virtualScale + canvas.virtualOffsetY
+            };
+        }
+        
+        function redrawCanvas() {
+            if (!sessionStarted) return;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Set up virtual coordinate system
+            ctx.save();
+            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
+            ctx.scale(canvas.virtualScale, canvas.virtualScale);
+            
+            // Redraw background image if exists
+            if (backgroundImage) {
+                ctx.drawImage(backgroundImage, 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+            }
+            
+            // Redraw all stored drawings and text
+            if (window.storedDrawings) {
+                window.storedDrawings.forEach(drawing => {
+                    redrawStoredElement(drawing);
+                });
+            }
+            
+            ctx.restore();
+        }
+        
+        function redrawStoredElement(element) {
+            ctx.save();
+            
+            if (element.type === 'text') {
+                ctx.font = `${element.size}px Arial`;
+                ctx.fillStyle = element.color;
+                ctx.textBaseline = 'top';
+                
+                const lines = element.text.split('\n');
+                lines.forEach((line, index) => {
+                    ctx.fillText(line, element.x, element.y + (index * element.size * 1.2));
+                });
+            } else if (element.type === 'drawing') {
+                ctx.lineWidth = element.size;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                
+                if (element.tool === 'pen') {
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.strokeStyle = element.color;
+                } else if (element.tool === 'eraser') {
+                    ctx.globalCompositeOperation = 'destination-out';
+                }
+                
+                if (element.points && element.points.length > 1) {
+                    ctx.beginPath();
+                    ctx.moveTo(element.points[0].x, element.points[0].y);
+                    for (let i = 1; i < element.points.length; i++) {
+                        ctx.lineTo(element.points[i].x, element.points[i].y);
+                    }
+                    ctx.stroke();
+                }
+            }
+            
+            ctx.restore();
+        }
         
         function selectRole(role) {
             userRole = role;
@@ -752,6 +1688,11 @@ socket.on('text-typing', (data) => {
             }
         }
         
+        function generateRoomCode() {
+            const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+            return code;
+        }
+        
         function joinRoom() {
             username = document.getElementById('usernameInput').value.trim();
             if (!username) {
@@ -762,846 +1703,4 @@ socket.on('text-typing', (data) => {
             const roomInput = document.getElementById('roomIdInput').value.trim();
             
             if (isHost) {
-                // Host creates a room
-                currentRoom = roomInput || generateRoomCode();
-                console.log('Creating room:', currentRoom);
-                socket.emit('create-room', { roomId: currentRoom, username, role: 'host' });
-            } else {
-                // Participant joins existing room
-                if (!roomInput) {
-                    alert('Please enter a room code');
-                    return;
-                }
-                currentRoom = roomInput.toUpperCase();
-                console.log('Joining room:', currentRoom);
-                socket.emit('join-room', { roomId: currentRoom, username, role: 'participant' });
-            }
-        }
-        
-        function generateRoomCode() {
-            const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-            console.log('Generated room code:', code);
-            return code;
-        }
-        
-        function showLobby() {
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('lobbyScreen').style.display = 'flex';
-            document.getElementById('lobbyRoomCode').textContent = currentRoom;
-            
-            if (isHost) {
-                document.getElementById('startSessionBtn').style.display = 'block';
-                document.getElementById('lobbyStatus').textContent = 'You can start the session when ready';
-            } else {
-                document.getElementById('readyToggle').style.display = 'block';
-                document.getElementById('lobbyStatus').textContent = 'Waiting for host to start session...';
-            }
-        }
-        
-        function updateLobbyParticipants(participants) {
-            const container = document.getElementById('lobbyParticipants');
-            const count = document.getElementById('lobbyParticipantCount');
-            
-            container.innerHTML = '';
-            count.textContent = `${participants.length} joined`;
-            
-            participants.forEach(participant => {
-                const card = document.createElement('div');
-                card.className = `participant-card ${participant.role}`;
-                if (participant.ready) card.classList.add('ready');
-                
-                const avatar = document.createElement('div');
-                avatar.className = 'participant-avatar';
-                avatar.style.backgroundColor = `hsl(${participant.username.charCodeAt(0) * 137.508}%, 70%, 50%)`;
-                avatar.textContent = participant.username.charAt(0).toUpperCase();
-                
-                const name = document.createElement('div');
-                name.className = 'participant-name';
-                name.textContent = participant.username;
-                
-                const role = document.createElement('div');
-                role.className = 'participant-role';
-                role.textContent = participant.role;
-                
-                card.appendChild(avatar);
-                card.appendChild(name);
-                card.appendChild(role);
-                
-                if (participant.ready && participant.role === 'participant') {
-                    const readyBadge = document.createElement('div');
-                    readyBadge.textContent = '✓ Ready';
-                    readyBadge.style.cssText = 'color: #4caf50; font-weight: 600; font-size: 0.8rem; margin-top: 0.25rem;';
-                    card.appendChild(readyBadge);
-                }
-                
-                container.appendChild(card);
-            });
-        }
-        
-        function toggleReady() {
-            isReady = !isReady;
-            const btn = document.getElementById('readyToggle');
-            
-            if (isReady) {
-                btn.textContent = '✓ Ready';
-                btn.classList.remove('not-ready');
-            } else {
-                btn.textContent = 'Not Ready';
-                btn.classList.add('not-ready');
-            }
-            
-            socket.emit('toggle-ready', { ready: isReady });
-        }
-        
-        function startSession() {
-            if (!isHost) return;
-            socket.emit('start-session');
-        }
-        
-        function leaveLobby() {
-            socket.emit('leave-room');
-            window.location.reload();
-        }
-        
-        function enterWhiteboard() {
-            document.getElementById('lobbyScreen').style.display = 'none';
-            document.getElementById('mainApp').style.display = 'grid';
-            
-            // Set up UI based on role
-            document.getElementById('currentRoom').textContent = currentRoom;
-            document.getElementById('userRole').textContent = isHost ? 'Host' : 'Participant';
-            
-            if (isHost) {
-                document.getElementById('hostControls').style.display = 'flex';
-                document.getElementById('recordingPanel').style.display = 'block';
-            }
-            
-            // Initialize canvas with universal coordinate system
-            resizeCanvas();
-            setupDrawingEventListeners();
-            sessionStarted = true;
-            
-            // Initialize storage arrays
-            if (!window.storedDrawings) window.storedDrawings = [];
-            if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
-            if (!window.liveTextRegions) window.liveTextRegions = new Map();
-            if (!window.remoteStrokes) window.remoteStrokes = new Map();
-            
-            console.log('Entered whiteboard with universal coordinate system');
-        }
-        
-        function resizeCanvas() {
-            const container = canvas.parentElement;
-            const rect = container.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
-        }
-        
-        // Socket event listeners
-        socket.on('connect', () => {
-            console.log('Connected to server');
-        });
-        
-        socket.on('disconnect', () => {
-            console.log('Disconnected from server');
-        });
-        
-        socket.on('error', (data) => {
-            console.error('Server error:', data);
-            alert(`Error: ${data.message}`);
-        });
-        
-        socket.on('room-created', (data) => {
-            console.log('Room created:', data);
-            showLobby();
-            updateLobbyParticipants(data.participants);
-        });
-        
-        socket.on('room-joined', (data) => {
-            console.log('Room joined:', data);
-            showLobby();
-            updateLobbyParticipants(data.participants);
-        });
-        
-        socket.on('room-exists', () => {
-            alert('Room code already exists. Please choose a different name.');
-        });
-        
-        socket.on('room-not-found', () => {
-            alert('Room not found. Please check the room code.');
-        });
-        
-        socket.on('room-full', () => {
-            alert('Room is full. Please try another room.');
-        });
-        
-        socket.on('lobby-updated', (data) => {
-            console.log('Lobby updated:', data);
-            updateLobbyParticipants(data.participants);
-        });
-        
-        socket.on('session-starting', () => {
-            document.getElementById('lobbyStatus').textContent = 'Session starting...';
-            setTimeout(enterWhiteboard, 1000);
-        });
-        
-        function updateSessionParticipants(participants) {
-            sessionParticipants.clear();
-            participants.forEach(p => {
-                sessionParticipants.set(p.id, p);
-            });
-            
-            // Update the participants list in the right panel
-            const usersList = document.getElementById('usersList');
-            if (usersList) {
-                usersList.innerHTML = participants.map(participant => {
-                    const roleIcon = participant.role === 'host' ? '🎯' : '👥';
-                    const roleColor = participant.role === 'host' ? '#ff9800' : '#4285f4';
-                    
-                    return `
-                        <div style="
-                            padding: 0.5rem;
-                            margin: 0.25rem 0;
-                            background: ${participant.role === 'host' ? 'linear-gradient(135deg, #fff3e0, #ffe0b2)' : 'linear-gradient(135deg, #e3f2fd, #bbdefb)'};
-                            border-radius: 8px;
-                            border-left: 3px solid ${roleColor};
-                            font-size: 14px;
-                            display: flex;
-                            align-items: center;
-                            gap: 0.5rem;
-                        ">
-                            <span style="font-size: 16px;">${roleIcon}</span>
-                            <div>
-                                <div style="font-weight: 600;">${participant.username}</div>
-                                <div style="font-size: 11px; color: #666; text-transform: uppercase;">${participant.role}</div>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-            }
-            
-            // Update participant count in status bar
-            const participantCount = document.getElementById('participantCount');
-            if (participantCount) {
-                const count = participants.length;
-                participantCount.textContent = `${count} participant${count !== 1 ? 's' : ''}`;
-            }
-        }
-        
-        socket.on('room-ended', (data) => {
-            alert(`Room ended: ${data.reason}`);
-            window.location.reload();
-        });
-        
-        // Simplified whiteboard functions for this demo
-        function setTool(tool) {
-            currentTool = tool;
-            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
-            document.getElementById(tool + 'Tool').classList.add('active');
-            
-            // Update cursor based on tool
-            if (tool === 'eraser') {
-                canvas.style.cursor = 'grab';
-            } else if (tool === 'text') {
-                canvas.style.cursor = 'text';
-            } else {
-                canvas.style.cursor = 'crosshair';
-            }
-            
-            console.log('Tool changed to:', tool);
-        }
-        
-        function clearCanvas() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            socket.emit('clear-canvas');
-            
-            // Clear remote user tracking
-            if (window.remoteLastPoints) {
-                window.remoteLastPoints.clear();
-            }
-            
-            // Clear text regions tracking
-            if (window.textRegions) {
-                window.textRegions.clear();
-            }
-            
-            console.log('Canvas cleared');
-        }
-        
-        function handleFileUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                if (file.type.startsWith('image/')) {
-                    setBackgroundImage(e.target.result, file.name);
-                }
-            };
-            reader.readAsDataURL(file);
-        }
-        
-        function setBackgroundImage(dataUrl, filename) {
-            const img = new Image();
-            img.onload = function() {
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                socket.emit('background-image', { dataUrl, filename });
-            };
-            img.src = dataUrl;
-        }
-        
-        function takeScreenshot() {
-            const link = document.createElement('a');
-            link.download = `whiteboard-${currentRoom}-${new Date().toISOString().slice(0, 19)}.png`;
-            link.href = canvas.toDataURL();
-            link.click();
-        }
-        
-        function toggleRecording() {
-            const btn = document.getElementById('recordBtn');
-            if (btn.textContent.includes('Start')) {
-                btn.textContent = '⏹️ Stop Recording';
-                btn.style.background = '#f44336';
-                document.getElementById('recordingInfo').style.display = 'block';
-                addChatMessage('System', '🎙️ Recording started');
-            } else {
-                btn.textContent = '🎙️ Start Recording';
-                btn.style.background = '#4285f4';
-                document.getElementById('recordingInfo').style.display = 'none';
-                addChatMessage('System', '⏹️ Recording stopped');
-            }
-        }
-        
-        function toggleParticipantDrawing() {
-            // Placeholder for participant drawing toggle
-            const btn = document.getElementById('drawingToggleText');
-            if (btn.textContent.includes('Allow')) {
-                btn.textContent = '🚫 Disable Drawing';
-            } else {
-                btn.textContent = '🖊️ Allow Drawing';
-            }
-        }
-        
-        function toggleParticipantChat() {
-            // Placeholder for participant chat toggle
-            const btn = document.getElementById('chatToggleText');
-            if (btn.textContent.includes('Allow')) {
-                btn.textContent = '🚫 Disable Chat';
-            } else {
-                btn.textContent = '💬 Allow Chat';
-            }
-        }
-        
-        function sendMessage() {
-            const input = document.getElementById('chatInput');
-            const message = input.value.trim();
-            if (message) {
-                addChatMessage(username, message);
-                socket.emit('chat-message', message);
-                input.value = '';
-            }
-        }
-        
-        function addChatMessage(sender, message) {
-            const chatMessages = document.getElementById('chatMessages');
-            const messageElement = document.createElement('div');
-            messageElement.style.cssText = 'margin-bottom: 0.5rem; font-size: 14px;';
-            
-            const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            
-            if (sender === 'System') {
-                messageElement.innerHTML = `<em style="color: #666;">[${timestamp}] ${message}</em>`;
-            } else {
-                const roleIcon = isHost && sender === username ? '🎯' : '👥';
-                messageElement.innerHTML = `
-                    <span style="color: #999; font-size: 11px;">[${timestamp}]</span>
-                    <span style="font-weight: 600; color: #4285f4;">${roleIcon} ${sender}:</span> ${message}
-                `;
-            }
-            
-            chatMessages.appendChild(messageElement);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-        
-        // Drawing functions with proper path handling and stylus support
-        let isDrawing = false;
-        let lastPoint = null;
-        let activeTextInputs = new Map();
-        
-        function getCanvasCoordinates(e) {
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            
-            // Handle touch/stylus events
-            let clientX, clientY;
-            if (e.touches && e.touches.length > 0) {
-                clientX = e.touches[0].clientX;
-                clientY = e.touches[0].clientY;
-            } else if (e.changedTouches && e.changedTouches.length > 0) {
-                clientX = e.changedTouches[0].clientX;
-                clientY = e.changedTouches[0].clientY;
-            } else {
-                clientX = e.clientX;
-                clientY = e.clientY;
-            }
-            
-            return {
-                x: (clientX - rect.left) * scaleX,
-                y: (clientY - rect.top) * scaleY
-            };
-        }
-        
-        function startDrawing(e) {
-            e.preventDefault();
-            
-            if (currentTool === 'text') {
-                addTextBox(e);
-                return;
-            }
-            
-            if (!sessionStarted) return;
-            
-            isDrawing = true;
-            const coords = getCanvasCoordinates(e);
-            lastPoint = coords;
-            
-            ctx.beginPath();
-            ctx.moveTo(coords.x, coords.y);
-            
-            // Emit start drawing event
-            socket.emit('drawing', {
-                x: coords.x,
-                y: coords.y,
-                color: currentColor,
-                size: currentSize,
-                tool: currentTool,
-                type: 'start'
-            });
-        }
-        
-        function draw(e) {
-            e.preventDefault();
-            
-            if (!isDrawing || !sessionStarted || currentTool === 'text') return;
-            
-            const coords = getCanvasCoordinates(e);
-            
-            ctx.lineWidth = currentSize;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            if (currentTool === 'pen') {
-                ctx.globalCompositeOperation = 'source-over';
-                ctx.strokeStyle = currentColor;
-            } else if (currentTool === 'eraser') {
-                ctx.globalCompositeOperation = 'destination-out';
-            }
-            
-            if (lastPoint) {
-                ctx.beginPath();
-                ctx.moveTo(lastPoint.x, lastPoint.y);
-                ctx.lineTo(coords.x, coords.y);
-                ctx.stroke();
-            }
-            
-            lastPoint = coords;
-            
-            // Emit drawing data
-            socket.emit('drawing', {
-                x: coords.x,
-                y: coords.y,
-                color: currentColor,
-                size: currentSize,
-                tool: currentTool,
-                type: 'draw'
-            });
-        }
-        
-        function stopDrawing(e) {
-            if (!isDrawing) return;
-            e.preventDefault();
-            
-            isDrawing = false;
-            lastPoint = null;
-            ctx.beginPath();
-            
-            // Emit stop drawing event
-            socket.emit('drawing', {
-                type: 'stop'
-            });
-        }
-        
-        // Text functionality with universal coordinates
-        function addTextBox(e) {
-            if (!sessionStarted) return;
-            
-            const coords = getVirtualCoordinates(e);
-            const canvasCoords = virtualToCanvas(coords.x, coords.y);
-            const textId = Date.now().toString();
-            
-            const textInput = document.createElement('textarea');
-            textInput.className = 'text-input';
-            textInput.id = `text-${textId}`;
-            textInput.placeholder = 'Type text here...';
-            textInput.style.left = (canvasCoords.x / canvas.width * 100) + '%';
-            textInput.style.top = (canvasCoords.y / canvas.height * 100) + '%';
-            textInput.style.fontSize = Math.max(12, currentSize) + 'px';
-            textInput.style.color = currentColor;
-            
-            // Live typing - update canvas as user types
-            let typingTimer;
-            textInput.addEventListener('input', () => {
-                clearTimeout(typingTimer);
-                
-                // Update canvas immediately using virtual coordinates
-                const currentText = textInput.value;
-                drawTextOnVirtualCanvas(coords.x, coords.y, currentText, currentColor, Math.max(12, currentSize), textId);
-                
-                // Emit live text update with debouncing
-                typingTimer = setTimeout(() => {
-                    socket.emit('text-typing', {
-                        id: textId,
-                        x: coords.x, // Virtual coordinates
-                        y: coords.y,
-                        text: currentText,
-                        color: currentColor,
-                        size: Math.max(12, currentSize),
-                        username: username,
-                        timestamp: Date.now()
-                    });
-                }, 100);
-            });
-            
-            // Handle text completion
-            textInput.addEventListener('blur', () => finishTextInput(textId));
-            textInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') {
-                    finishTextInput(textId);
-                }
-                e.stopPropagation();
-            });
-            
-            document.getElementById('textInputOverlay').appendChild(textInput);
-            activeTextInputs.set(textId, { 
-                element: textInput, 
-                coords: coords, // Store virtual coordinates
-                lastText: ''
-            });
-            
-            // Focus and select
-            setTimeout(() => textInput.focus(), 10);
-            
-            // Emit text box creation
-            socket.emit('text-started', {
-                id: textId,
-                x: coords.x,
-                y: coords.y,
-                color: currentColor,
-                size: Math.max(12, currentSize),
-                username: username,
-                timestamp: Date.now()
-            });
-        }
-        
-        function finishTextInput(textId) {
-            const textData = activeTextInputs.get(textId);
-            if (!textData) return;
-            
-            const textInput = textData.element;
-            const coords = textData.coords; // Virtual coordinates
-            const text = textInput.value.trim();
-            
-            // Store completed text
-            if (text) {
-                if (!window.storedDrawings) window.storedDrawings = [];
-                window.storedDrawings.push({
-                    type: 'text',
-                    x: coords.x,
-                    y: coords.y,
-                    text: text,
-                    color: currentColor,
-                    size: Math.max(12, currentSize),
-                    username: username,
-                    timestamp: Date.now()
-                });
-            }
-            
-            // Emit completion
-            socket.emit('text-completed', {
-                id: textId,
-                x: coords.x,
-                y: coords.y,
-                text: text,
-                color: currentColor,
-                size: Math.max(12, currentSize),
-                username: username,
-                timestamp: Date.now()
-            });
-            
-            // Remove text input but keep text on canvas
-            textInput.remove();
-            activeTextInputs.delete(textId);
-        }
-        
-        function drawTextOnVirtualCanvas(virtualX, virtualY, text, color, size, textId = null) {
-            if (!text) return;
-            
-            ctx.save();
-            
-            // Set up virtual coordinate system
-            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
-            ctx.scale(canvas.virtualScale, canvas.virtualScale);
-            
-            // Clear previous text if this is a live update
-            if (textId && window.liveTextRegions) {
-                const previousRegion = window.liveTextRegions.get(textId);
-                if (previousRegion) {
-                    ctx.globalCompositeOperation = 'destination-out';
-                    ctx.fillRect(previousRegion.x - 2, previousRegion.y - 2, 
-                               previousRegion.width + 4, previousRegion.height + 4);
-                }
-            }
-            
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.font = `${size}px Arial`;
-            ctx.fillStyle = color;
-            ctx.textBaseline = 'top';
-            
-            // Handle multi-line text and calculate bounds
-            const lines = text.split('\n');
-            let maxWidth = 0;
-            let totalHeight = lines.length * size * 1.2;
-            
-            lines.forEach((line, index) => {
-                const lineY = virtualY + (index * size * 1.2);
-                ctx.fillText(line, virtualX, lineY);
-                
-                // Track the widest line
-                const lineWidth = ctx.measureText(line).width;
-                if (lineWidth > maxWidth) maxWidth = lineWidth;
-            });
-            
-            // Store text region for future clearing (if this is live text)
-            if (textId) {
-                if (!window.liveTextRegions) window.liveTextRegions = new Map();
-                window.liveTextRegions.set(textId, {
-                    x: virtualX,
-                    y: virtualY,
-                    width: maxWidth,
-                    height: totalHeight
-                });
-            }
-            
-            ctx.restore();
-        }
-        
-        // Handle remote drawing with universal coordinates
-        function drawRemoteLine(data) {
-            if (!sessionStarted) return;
-            
-            ctx.save();
-            
-            // Set up virtual coordinate system  
-            ctx.translate(canvas.virtualOffsetX, canvas.virtualOffsetY);
-            ctx.scale(canvas.virtualScale, canvas.virtualScale);
-            
-            ctx.lineWidth = data.size || 5;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            if (data.tool === 'pen') {
-                ctx.globalCompositeOperation = 'source-over';
-                ctx.strokeStyle = data.color || '#000000';
-            } else if (data.tool === 'eraser') {
-                ctx.globalCompositeOperation = 'destination-out';
-            }
-            
-            // Handle different drawing events
-            if (data.type === 'start') {
-                // Start new path at this position
-                ctx.beginPath();
-                ctx.moveTo(data.x, data.y);
-                
-                // Store last point for this user
-                if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
-                window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
-                
-                // Start tracking this stroke
-                if (!window.remoteStrokes) window.remoteStrokes = new Map();
-                window.remoteStrokes.set(data.userId, {
-                    type: 'drawing',
-                    tool: data.tool,
-                    color: data.color,
-                    size: data.size,
-                    points: [{ x: data.x, y: data.y }],
-                    userId: data.userId,
-                    username: data.username,
-                    timestamp: data.timestamp
-                });
-                
-            } else if (data.type === 'draw') {
-                // Continue drawing to this position
-                const lastPoint = window.remoteLastPoints?.get(data.userId);
-                
-                ctx.beginPath();
-                if (lastPoint) {
-                    ctx.moveTo(lastPoint.x, lastPoint.y);
-                    ctx.lineTo(data.x, data.y);
-                } else {
-                    ctx.moveTo(data.x, data.y);
-                }
-                ctx.stroke();
-                
-                // Update last point and stroke
-                if (!window.remoteLastPoints) window.remoteLastPoints = new Map();
-                window.remoteLastPoints.set(data.userId, { x: data.x, y: data.y });
-                
-                if (window.remoteStrokes && window.remoteStrokes.has(data.userId)) {
-                    window.remoteStrokes.get(data.userId).points.push({ x: data.x, y: data.y });
-                }
-                
-            } else if (data.type === 'stop') {
-                // End the current path and store it
-                if (window.remoteLastPoints) {
-                    window.remoteLastPoints.delete(data.userId);
-                }
-                
-                if (window.remoteStrokes && window.remoteStrokes.has(data.userId)) {
-                    const stroke = window.remoteStrokes.get(data.userId);
-                    if (!window.storedDrawings) window.storedDrawings = [];
-                    window.storedDrawings.push(stroke);
-                    window.remoteStrokes.delete(data.userId);
-                }
-                
-                ctx.beginPath();
-            }
-            
-            ctx.restore();
-        }
-        
-        function clearCanvas() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            socket.emit('clear-canvas');
-            
-            // Clear all tracking data
-            if (window.remoteLastPoints) window.remoteLastPoints.clear();
-            if (window.liveTextRegions) window.liveTextRegions.clear();
-            if (window.storedDrawings) window.storedDrawings = [];
-            if (window.remoteStrokes) window.remoteStrokes.clear();
-            
-            console.log('Canvas cleared with universal coordinates');
-        }
-        
-        // Event listeners for mouse, touch, and stylus input
-        function setupDrawingEventListeners() {
-            // Mouse events
-            canvas.addEventListener('mousedown', startDrawing);
-            canvas.addEventListener('mousemove', draw);
-            canvas.addEventListener('mouseup', stopDrawing);
-            canvas.addEventListener('mouseout', stopDrawing);
-            
-            // Touch events (tablets/phones)
-            canvas.addEventListener('touchstart', startDrawing, { passive: false });
-            canvas.addEventListener('touchmove', draw, { passive: false });
-            canvas.addEventListener('touchend', stopDrawing, { passive: false });
-            canvas.addEventListener('touchcancel', stopDrawing, { passive: false });
-            
-            // Pointer events (stylus/pen input)
-            if (window.PointerEvent) {
-                canvas.addEventListener('pointerdown', startDrawing);
-                canvas.addEventListener('pointermove', draw);
-                canvas.addEventListener('pointerup', stopDrawing);
-                canvas.addEventListener('pointercancel', stopDrawing);
-                canvas.addEventListener('pointerout', stopDrawing);
-                
-                // Enable stylus/pen specific features
-                canvas.style.touchAction = 'none'; // Prevent scrolling during drawing
-            }
-            
-            console.log('Drawing event listeners setup complete');
-        }
-        
-        // Socket listeners for drawing and text
-        socket.on('drawing', (data) => {
-            drawRemoteLine(data);
-        });
-        
-        socket.on('text-started', (data) => {
-            console.log(`${data.username} started typing text`);
-        });
-        
-        socket.on('text-typing', (data) => {
-            // Show live text as remote user types
-            drawTextOnCanvas(data.x, data.y, data.text, data.color, data.size, data.id);
-        });
-        
-        socket.on('text-completed', (data) => {
-            // Final text placement
-            drawTextOnCanvas(data.x, data.y, data.text, data.color, data.size);
-            
-            // Clean up any live text regions for this text
-            if (window.textRegions) {
-                window.textRegions.delete(data.id);
-            }
-            
-            if (data.text.length > 0) {
-                addChatMessage('System', `📝 ${data.username} added text: "${data.text.substring(0, 30)}${data.text.length > 30 ? '...' : ''}"`);
-            }
-        });
-        
-        socket.on('session-started', (data) => {
-            enterWhiteboard();
-            // Get initial participant list
-            if (data.participants) {
-                updateSessionParticipants(data.participants);
-            }
-        });
-        
-        socket.on('participant-joined-session', (data) => {
-            updateSessionParticipants(data.participants);
-            addChatMessage('System', `👋 ${data.username} joined the session`);
-        });
-        
-        socket.on('participant-left-session', (data) => {
-            updateSessionParticipants(data.participants);
-            addChatMessage('System', `👋 ${data.username} left the session`);
-        });
-        
-        socket.on('chat-message', (data) => {
-            addChatMessage(data.username, data.message);
-        });
-        
-        socket.on('background-image', (data) => {
-            const img = new Image();
-            img.onload = function() {
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            };
-            img.src = data.dataUrl;
-        });
-        
-        // Tool controls
-        document.getElementById('colorPicker').addEventListener('change', (e) => {
-            currentColor = e.target.value;
-        });
-        
-        document.getElementById('sizeSlider').addEventListener('input', (e) => {
-            currentSize = e.target.value;
-            document.getElementById('sizeDisplay').textContent = e.target.value + 'px';
-        });
-        
-        document.getElementById('chatInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                sendMessage();
-            }
-        });
-        
-        window.addEventListener('resize', () => {
-            if (sessionStarted) resizeCanvas();
-        });
-        
-        // Initialize
-        console.log('Collaborative Whiteboard with Lobby System Ready!');
-    </script>
-</body>
-</html>
+                currentRoom = roomInput || generate
