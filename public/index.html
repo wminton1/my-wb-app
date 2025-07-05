@@ -54,10 +54,10 @@
     <div class="app-container" id="mainApp">
         <div class="toolbar">
             <div class="tool-group">
-                <button type="button" class="tool-btn active" id="penTool" onclick="setTool('pen')">✏️ Pen</button>
-                <button type="button" class="tool-btn" id="eraserTool" onclick="setTool('eraser')">🧽 Eraser</button>
-                <button type="button" class="tool-btn" id="textTool" onclick="setTool('text')">📝 Text</button>
-                <button type="button" class="tool-btn" onclick="clearCanvas()">🗑️ Clear</button>
+                <button type="button" class="tool-btn active" id="penTool" onclick="setTool('pen')" title="Draw with pen">✏️ Pen</button>
+                <button type="button" class="tool-btn" id="eraserTool" onclick="setTool('eraser')" title="Erase content">🧽 Eraser</button>
+                <button type="button" class="tool-btn" id="textTool" onclick="setTool('text')" title="Add resizable text (click anywhere)">📝 Text+</button>
+                <button type="button" onclick="clearCanvas()" title="Clear all drawings">🗑️ Clear</button>
             </div>
             <div class="tool-group">
                 <input type="color" id="colorPicker" value="#000000">
@@ -72,6 +72,7 @@
         <div class="left-panel">
             <div class="panel-section">
                 <h3>📁 Files</h3>
+                <p style="font-size: 12px; color: #666; margin-bottom: 1rem;">Upload images or PowerPoint files. PPT files will create demo slides with large, visible text.</p>
                 <input type="file" id="fileInput" accept="image/*,.pdf,.ppt,.pptx" onchange="handleFileUpload(event)" style="width: 100%; margin-bottom: 1rem;">
                 <div id="fileList" style="margin-bottom: 1rem;">
                     <div style="color: #666; font-size: 14px;">No files uploaded</div>
@@ -81,7 +82,7 @@
                     <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
                         <button type="button" onclick="previousSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 6px;">← Prev</button>
                         <span id="slideCounter" style="font-size: 14px; font-weight: 600;">1 / 1</span>
-                        <button type="button" onclick="nextSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: radius: 6px;">Next →</button>
+                        <button type="button" onclick="nextSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 6px;">Next →</button>
                     </div>
                     <button type="button" onclick="clearSlideDrawings()" style="width: 100%; padding: 8px; background: #ff9800; color: white; border: none; border-radius: 6px;">Clear Slide Drawings</button>
                 </div>
@@ -262,157 +263,6 @@
             lastPoint = coords;
             
             drawLocal(coords, 'start');
-            socket.emit('drawing', { x: coords.x, y: coords.y, color: currentColor, size: currentSize, tool: currentTool, type: 'start', slideIndex: currentSlideIndex });
-        }
-        
-        function sendMessage() {
-            // Check chat permissions for participants
-            if (!isHost && !canChat) {
-                addChatMessage('System', 'Chat is disabled by the host');
-                return;
-            }
-            
-            const input = document.getElementById('chatInput');
-            const message = input.value.trim();
-            if (message) {
-                socket.emit('chat-message', message);
-                input.value = '';
-            }
-        }
-        
-        function addTextBox(e) {
-            const coords = getVirtualCoords(e);
-            const canvasCoords = {
-                x: coords.x * scale + offsetX,
-                y: coords.y * scale + offsetY
-            };
-            
-            const textInput = document.createElement('textarea');
-            textInput.style.cssText = `
-                position: absolute;
-                left: ${canvasCoords.x}px;
-                top: ${canvasCoords.y}px;
-                background: transparent;
-                border: 2px dashed #4285f4;
-                outline: none;
-                font-family: Arial, sans-serif;
-                font-size: ${Math.max(12, currentSize)}px;
-                color: ${currentColor};
-                padding: 4px;
-                min-width: 100px;
-                min-height: 30px;
-                resize: both;
-                z-index: 1000;
-            `;
-            textInput.placeholder = 'Type text here...';
-            
-            const finishText = () => {
-                const text = textInput.value.trim();
-                if (text) {
-                    // Draw text on canvas
-                    ctx.save();
-                    ctx.translate(offsetX, offsetY);
-                    ctx.scale(scale, scale);
-                    ctx.font = `${Math.max(12, currentSize)}px Arial`;
-                    ctx.fillStyle = currentColor;
-                    ctx.textBaseline = 'top';
-                    ctx.fillText(text, coords.x, coords.y);
-                    ctx.restore();
-                    
-                    // Broadcast text to other users
-                    socket.emit('text-added', {
-                        x: coords.x,
-                        y: coords.y,
-                        text: text,
-                        color: currentColor,
-                        size: Math.max(12, currentSize),
-                        slideIndex: currentSlideIndex
-                    });
-                }
-                textInput.remove();
-            };
-            
-            textInput.addEventListener('blur', finishText);
-            textInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') finishText();
-                e.stopPropagation();
-            });
-            
-            document.getElementById('textInputOverlay').appendChild(textInput);
-            setTimeout(() => textInput.focus(), 10);
-        }
-        
-        function draw(e) {
-            e.preventDefault();
-            if (!isDrawing || !sessionStarted) return;
-            
-            const coords = getVirtualCoords(e);
-            drawLocal(coords, 'draw');
-            
-            // Store drawing for current slide
-            const slideKey = `slide_${currentSlideIndex}`;
-            if (!slideDrawings.has(slideKey)) {
-                slideDrawings.set(slideKey, []);
-            }
-            
-            // Add to current stroke or create new one
-            const currentDrawings = slideDrawings.get(slideKey);
-            if (currentDrawings.length === 0 || !currentDrawings[currentDrawings.length - 1].path) {
-                currentDrawings.push({
-                    tool: currentTool,
-                    color: currentColor,
-                    size: currentSize,
-                    path: [lastPoint, coords]
-                });
-            } else {
-                currentDrawings[currentDrawings.length - 1].path.push(coords);
-            }
-            
-            socket.emit('drawing', { 
-                x: coords.x, y: coords.y, 
-                lastX: lastPoint?.x, lastY: lastPoint?.y,
-                color: currentColor, size: currentSize, tool: currentTool, type: 'draw',
-                slideIndex: currentSlideIndex
-            });
-            lastPoint = coords;
-        }
-        
-        function stopDrawing(e) {
-            if (!isDrawing) return;
-            e.preventDefault();
-            isDrawing = false;
-            lastPoint = null;
-            socket.emit('drawing', { type: 'stop' });
-        }
-        
-        function setTool(tool) {
-            currentTool = tool;
-            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
-            document.getElementById(tool + 'Tool').classList.add('active');
-        }
-        
-        function clearCanvas() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            socket.emit('clear-canvas');
-        }
-        
-        function selectRole(role) {
-            userRole = role;
-            isHost = (role === 'host');
-            document.querySelectorAll('.role-option').forEach(opt => opt.classList.remove('selected'));
-            document.getElementById(role + 'Role').classList.add('selected');
-        }
-        
-        function joinRoom() {
-            username = document.getElementById('usernameInput').value.trim();
-            if (!username) { alert('Enter your name'); return; }
-            
-            const roomInput = document.getElementById('roomIdInput').value.trim();
-            currentRoom = isHost ? (roomInput || Math.random().toString(36).substring(2, 8).toUpperCase()) : roomInput.toUpperCase();
-            
-            if (!isHost && !currentRoom) { alert('Enter room code'); return; }
-            
-            // Always try to join room, regardless of state
             socket.emit(isHost ? 'create-room' : 'join-room', { 
                 roomId: currentRoom, 
                 username, 
@@ -483,6 +333,12 @@
         }
         
         function sendMessage() {
+            // Check chat permissions for participants
+            if (!isHost && !canChat) {
+                addChatMessage('System', 'Chat is disabled by the host');
+                return;
+            }
+            
             const input = document.getElementById('chatInput');
             const message = input.value.trim();
             if (message) {
@@ -553,6 +409,74 @@
             reader.readAsDataURL(file);
         }
         
+        function handlePresentationFile(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                // Create demo slides for presentation with larger, more visible text
+                const demoSlides = [];
+                for (let i = 1; i <= 5; i++) {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = VIRTUAL_WIDTH;
+                    canvas.height = VIRTUAL_HEIGHT;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // White background
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Add a subtle border
+                    ctx.strokeStyle = '#e0e0e0';
+                    ctx.lineWidth = 4;
+                    ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
+                    
+                    // Large slide title
+                    ctx.fillStyle = '#2c3e50';
+                    ctx.font = 'bold 120px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`Slide ${i}`, canvas.width/2, canvas.height/2 - 100);
+                    
+                    // Subtitle with filename
+                    ctx.fillStyle = '#7f8c8d';
+                    ctx.font = '60px Arial';
+                    ctx.fillText(file.name.split('.')[0], canvas.width/2, canvas.height/2 + 50);
+                    
+                    // Add some content placeholders
+                    ctx.fillStyle = '#34495e';
+                    ctx.font = '40px Arial';
+                    ctx.textAlign = 'left';
+                    const contentY = canvas.height/2 + 150;
+                    ctx.fillText('• Content area - click to add text', 200, contentY);
+                    ctx.fillText('• Use text tool to add editable content', 200, contentY + 60);
+                    ctx.fillText('• Draw anywhere on the slide', 200, contentY + 120);
+                    
+                    demoSlides.push(canvas.toDataURL());
+                }
+                
+                slides = demoSlides;
+                currentSlideIndex = 0;
+                slideDrawings.clear();
+                
+                document.getElementById('slideControls').style.display = 'block';
+                updateSlideCounter();
+                loadCurrentSlide();
+                
+                // Update file list
+                const fileList = document.getElementById('fileList');
+                fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📊 ${file.name} (${slides.length} slides)</div>`;
+                
+                // Broadcast to other users IMMEDIATELY
+                socket.emit('presentation-shared', {
+                    slides: slides,
+                    filename: file.name,
+                    currentSlide: currentSlideIndex,
+                    username: username
+                });
+                
+                console.log('Presentation shared:', file.name, slides.length, 'slides');
+            };
+            reader.readAsDataURL(file);
+        }
+        
         function clearBackground() {
             backgroundImage = null;
             slides = [];
@@ -568,13 +492,11 @@
         
         function toggleParticipantDrawing() {
             if (!isHost) return;
-            
             socket.emit('toggle-participant-drawing');
         }
         
         function toggleParticipantChat() {
             if (!isHost) return;
-            
             socket.emit('toggle-participant-chat');
         }
         
@@ -599,71 +521,6 @@
                 chatBtn.textContent = '💬 Chat: Disabled (Click to Enable)';
                 chatBtn.style.background = '#f44336';
             }
-        }
-        
-        function handleImageFile(file) {
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                slides = [e.target.result];
-                currentSlideIndex = 0;
-                loadCurrentSlide();
-                
-                // Broadcast to other users IMMEDIATELY
-                socket.emit('file-shared', {
-                    type: 'image',
-                    data: e.target.result,
-                    filename: file.name,
-                    username: username
-                });
-                
-                console.log('Image file shared:', file.name);
-            };
-            reader.readAsDataURL(file);
-        }
-        
-        function handlePresentationFile(file) {
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                // Create demo slides for presentation
-                const demoSlides = [];
-                for (let i = 1; i <= 5; i++) {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = VIRTUAL_WIDTH;
-                    canvas.height = VIRTUAL_HEIGHT;
-                    const ctx = canvas.getContext('2d');
-                    
-                    ctx.fillStyle = '#ffffff';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    ctx.fillStyle = '#4285f4';
-                    ctx.font = '48px Arial';
-                    ctx.textAlign = 'center';
-                    ctx.fillText(`Slide ${i}`, canvas.width/2, canvas.height/2);
-                    ctx.fillStyle = '#666';
-                    ctx.font = '24px Arial';
-                    ctx.fillText(file.name, canvas.width/2, canvas.height/2 + 60);
-                    
-                    demoSlides.push(canvas.toDataURL());
-                }
-                
-                slides = demoSlides;
-                currentSlideIndex = 0;
-                slideDrawings.clear();
-                
-                document.getElementById('slideControls').style.display = 'block';
-                updateSlideCounter();
-                loadCurrentSlide();
-                
-                // Broadcast to other users IMMEDIATELY
-                socket.emit('presentation-shared', {
-                    slides: slides,
-                    filename: file.name,
-                    currentSlide: currentSlideIndex,
-                    username: username
-                });
-                
-                console.log('Presentation shared:', file.name);
-            };
-            reader.readAsDataURL(file);
         }
         
         function loadCurrentSlide() {
@@ -882,9 +739,41 @@
                 ctx.font = `${data.size}px Arial`;
                 ctx.fillStyle = data.color;
                 ctx.textBaseline = 'top';
-                ctx.fillText(data.text, data.x, data.y);
+                
+                // Handle multi-line text
+                if (data.text.includes('\n')) {
+                    const lines = data.text.split('\n');
+                    const lineHeight = data.lineHeight || data.size * 1.2;
+                    lines.forEach((line, index) => {
+                        ctx.fillText(line, data.x, data.y + (index * lineHeight));
+                    });
+                } else {
+                    ctx.fillText(data.text, data.x, data.y);
+                }
+                
                 ctx.restore();
             }
+        });
+        
+        // Add missing presentation-shared event handler
+        socket.on('presentation-shared', (data) => {
+            console.log('Presentation received from:', data.username);
+            
+            slides = data.slides;
+            currentSlideIndex = data.currentSlide || 0;
+            slideDrawings.clear();
+            
+            if (slides.length > 1) {
+                document.getElementById('slideControls').style.display = 'block';
+                updateSlideCounter();
+            }
+            
+            loadCurrentSlide();
+            
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📊 ${data.filename} (by ${data.username}) - ${slides.length} slides</div>`;
+            
+            addChatMessage('System', `📊 ${data.username} shared presentation: ${data.filename} (${slides.length} slides)`);
         });
         
         // Tool controls
@@ -901,4 +790,258 @@
         resizeCanvas();
     </script>
 </body>
-</html>
+</html>('drawing', { x: coords.x, y: coords.y, color: currentColor, size: currentSize, tool: currentTool, type: 'start', slideIndex: currentSlideIndex });
+        }
+        
+        function addTextBox(e) {
+            const coords = getVirtualCoords(e);
+            const canvasCoords = {
+                x: coords.x * scale + offsetX,
+                y: coords.y * scale + offsetY
+            };
+            
+            // Create a container for the text editor
+            const textContainer = document.createElement('div');
+            textContainer.style.cssText = `
+                position: absolute;
+                left: ${canvasCoords.x}px;
+                top: ${canvasCoords.y}px;
+                background: rgba(255, 255, 255, 0.95);
+                border: 2px solid #4285f4;
+                border-radius: 8px;
+                padding: 8px;
+                min-width: 200px;
+                min-height: 80px;
+                z-index: 1000;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                resize: both;
+                overflow: hidden;
+            `;
+            
+            // Font size controls
+            const fontControls = document.createElement('div');
+            fontControls.style.cssText = `
+                display: flex;
+                gap: 8px;
+                margin-bottom: 8px;
+                align-items: center;
+                background: #f8f9fa;
+                padding: 4px 8px;
+                border-radius: 4px;
+            `;
+            
+            const fontSizeSlider = document.createElement('input');
+            fontSizeSlider.type = 'range';
+            fontSizeSlider.min = '12';
+            fontSizeSlider.max = '72';
+            fontSizeSlider.value = Math.max(12, currentSize * 2);
+            fontSizeSlider.style.width = '100px';
+            
+            const fontSizeDisplay = document.createElement('span');
+            fontSizeDisplay.textContent = fontSizeSlider.value + 'px';
+            fontSizeDisplay.style.cssText = 'font-size: 12px; font-weight: 600; min-width: 35px;';
+            
+            const colorPicker = document.createElement('input');
+            colorPicker.type = 'color';
+            colorPicker.value = currentColor;
+            colorPicker.style.cssText = 'width: 30px; height: 25px; border: none; border-radius: 4px; cursor: pointer;';
+            
+            fontControls.appendChild(document.createTextNode('Size: '));
+            fontControls.appendChild(fontSizeSlider);
+            fontControls.appendChild(fontSizeDisplay);
+            fontControls.appendChild(colorPicker);
+            
+            // Text input area
+            const textInput = document.createElement('textarea');
+            textInput.style.cssText = `
+                width: 100%;
+                height: 60px;
+                background: transparent;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                outline: none;
+                font-family: Arial, sans-serif;
+                font-size: ${fontSizeSlider.value}px;
+                color: ${currentColor};
+                padding: 8px;
+                resize: vertical;
+                min-height: 60px;
+            `;
+            textInput.placeholder = 'Type your text here...';
+            
+            // Action buttons
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.cssText = `
+                display: flex;
+                gap: 8px;
+                margin-top: 8px;
+                justify-content: flex-end;
+            `;
+            
+            const saveBtn = document.createElement('button');
+            saveBtn.textContent = '✓ Save';
+            saveBtn.style.cssText = `
+                padding: 6px 12px;
+                background: #4285f4;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+            `;
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '✕ Cancel';
+            cancelBtn.style.cssText = `
+                padding: 6px 12px;
+                background: #6c757d;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+            `;
+            
+            buttonContainer.appendChild(cancelBtn);
+            buttonContainer.appendChild(saveBtn);
+            
+            textContainer.appendChild(fontControls);
+            textContainer.appendChild(textInput);
+            textContainer.appendChild(buttonContainer);
+            
+            // Event handlers
+            fontSizeSlider.addEventListener('input', () => {
+                const size = fontSizeSlider.value;
+                fontSizeDisplay.textContent = size + 'px';
+                textInput.style.fontSize = size + 'px';
+            });
+            
+            colorPicker.addEventListener('change', () => {
+                textInput.style.color = colorPicker.value;
+            });
+            
+            const finishText = (save = true) => {
+                const text = textInput.value.trim();
+                if (text && save) {
+                    const fontSize = parseInt(fontSizeSlider.value);
+                    const textColor = colorPicker.value;
+                    
+                    // Draw text on canvas with proper line wrapping
+                    ctx.save();
+                    ctx.translate(offsetX, offsetY);
+                    ctx.scale(scale, scale);
+                    ctx.font = `${fontSize}px Arial`;
+                    ctx.fillStyle = textColor;
+                    ctx.textBaseline = 'top';
+                    
+                    // Handle multi-line text
+                    const lines = text.split('\n');
+                    const lineHeight = fontSize * 1.2;
+                    lines.forEach((line, index) => {
+                        ctx.fillText(line, coords.x, coords.y + (index * lineHeight));
+                    });
+                    
+                    ctx.restore();
+                    
+                    // Broadcast text to other users
+                    socket.emit('text-added', {
+                        x: coords.x,
+                        y: coords.y,
+                        text: text,
+                        color: textColor,
+                        size: fontSize,
+                        lineHeight: lineHeight,
+                        slideIndex: currentSlideIndex
+                    });
+                }
+                textContainer.remove();
+            };
+            
+            saveBtn.addEventListener('click', () => finishText(true));
+            cancelBtn.addEventListener('click', () => finishText(false));
+            
+            textInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') finishText(false);
+                if (e.ctrlKey && e.key === 'Enter') finishText(true);
+                e.stopPropagation();
+            });
+            
+            document.getElementById('textInputOverlay').appendChild(textContainer);
+            setTimeout(() => textInput.focus(), 10);
+        }
+        
+        function draw(e) {
+            e.preventDefault();
+            if (!isDrawing || !sessionStarted) return;
+            
+            const coords = getVirtualCoords(e);
+            drawLocal(coords, 'draw');
+            
+            // Store drawing for current slide
+            const slideKey = `slide_${currentSlideIndex}`;
+            if (!slideDrawings.has(slideKey)) {
+                slideDrawings.set(slideKey, []);
+            }
+            
+            // Add to current stroke or create new one
+            const currentDrawings = slideDrawings.get(slideKey);
+            if (currentDrawings.length === 0 || !currentDrawings[currentDrawings.length - 1].path) {
+                currentDrawings.push({
+                    tool: currentTool,
+                    color: currentColor,
+                    size: currentSize,
+                    path: [lastPoint, coords]
+                });
+            } else {
+                currentDrawings[currentDrawings.length - 1].path.push(coords);
+            }
+            
+            socket.emit('drawing', { 
+                x: coords.x, y: coords.y, 
+                lastX: lastPoint?.x, lastY: lastPoint?.y,
+                color: currentColor, size: currentSize, tool: currentTool, type: 'draw',
+                slideIndex: currentSlideIndex
+            });
+            lastPoint = coords;
+        }
+        
+        function stopDrawing(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+            isDrawing = false;
+            lastPoint = null;
+            socket.emit('drawing', { type: 'stop' });
+        }
+        
+        function setTool(tool) {
+            currentTool = tool;
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(tool + 'Tool').classList.add('active');
+        }
+        
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            socket.emit('clear-canvas');
+        }
+        
+        function selectRole(role) {
+            userRole = role;
+            isHost = (role === 'host');
+            document.querySelectorAll('.role-option').forEach(opt => opt.classList.remove('selected'));
+            document.getElementById(role + 'Role').classList.add('selected');
+        }
+        
+        function joinRoom() {
+            username = document.getElementById('usernameInput').value.trim();
+            if (!username) { alert('Enter your name'); return; }
+            
+            const roomInput = document.getElementById('roomIdInput').value.trim();
+            currentRoom = isHost ? (roomInput || Math.random().toString(36).substring(2, 8).toUpperCase()) : roomInput.toUpperCase();
+            
+            if (!isHost && !currentRoom) { alert('Enter room code'); return; }
+            
+            // Always try to join room, regardless of state
+            socket.emit
+            
