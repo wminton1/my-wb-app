@@ -378,7 +378,14 @@
             
             if (!isHost && !currentRoom) { alert('Enter room code'); return; }
             
-            socket.emit(isHost ? 'create-room' : 'join-room', { roomId: currentRoom, username, role: userRole });
+            // Always try to join room, regardless of state
+            socket.emit(isHost ? 'create-room' : 'join-room', { 
+                roomId: currentRoom, 
+                username, 
+                role: userRole 
+            });
+            
+            console.log(`Attempting to ${isHost ? 'create' : 'join'} room:`, currentRoom);
         }
         
         function showLobby() {
@@ -487,31 +494,30 @@
                 currentSlideIndex = 0;
                 loadCurrentSlide();
                 
-                // Broadcast to other users
+                // Broadcast to other users IMMEDIATELY
                 socket.emit('file-shared', {
                     type: 'image',
                     data: e.target.result,
-                    filename: file.name
+                    filename: file.name,
+                    username: username
                 });
+                
+                console.log('Image file shared:', file.name);
             };
             reader.readAsDataURL(file);
         }
         
         function handlePresentationFile(file) {
-            // For demo purposes, we'll treat presentations as multi-slide images
-            // In a real implementation, you'd use a library like PDF.js or similar
             const reader = new FileReader();
             reader.onload = function(e) {
-                // Simulate multiple slides for demo
+                // Create demo slides for presentation
                 const demoSlides = [];
                 for (let i = 1; i <= 5; i++) {
-                    // Create placeholder slides
                     const canvas = document.createElement('canvas');
                     canvas.width = VIRTUAL_WIDTH;
                     canvas.height = VIRTUAL_HEIGHT;
                     const ctx = canvas.getContext('2d');
                     
-                    // Create a simple slide background
                     ctx.fillStyle = '#ffffff';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.fillStyle = '#4285f4';
@@ -533,12 +539,15 @@
                 updateSlideCounter();
                 loadCurrentSlide();
                 
-                // Broadcast to other users
+                // Broadcast to other users IMMEDIATELY
                 socket.emit('presentation-shared', {
                     slides: slides,
                     filename: file.name,
-                    currentSlide: currentSlideIndex
+                    currentSlide: currentSlideIndex,
+                    username: username
                 });
+                
+                console.log('Presentation shared:', file.name);
             };
             reader.readAsDataURL(file);
         }
@@ -620,43 +629,93 @@
         }
         
         // Socket events
-        socket.on('room-created', (data) => { showLobby(); updateLobbyParticipants(data.participants); });
-        socket.on('room-joined', (data) => { showLobby(); updateLobbyParticipants(data.participants); });
+        socket.on('room-created', (data) => { 
+            console.log('Room created successfully');
+            showLobby(); 
+            updateLobbyParticipants(data.participants); 
+        });
+        
+        socket.on('room-joined', (data) => { 
+            console.log('Room joined successfully');
+            if (data.roomState === 'active') {
+                // Room is already active, skip lobby and go straight to whiteboard
+                enterWhiteboard();
+                updateParticipants(data.participants);
+                
+                // Load existing room content
+                if (data.slides) {
+                    slides = data.slides;
+                    currentSlideIndex = data.currentSlide || 0;
+                    if (slides.length > 1) {
+                        document.getElementById('slideControls').style.display = 'block';
+                        updateSlideCounter();
+                    }
+                    loadCurrentSlide();
+                }
+            } else {
+                // Room is in lobby, show lobby
+                showLobby(); 
+                updateLobbyParticipants(data.participants);
+            }
+        });
+        
         socket.on('lobby-updated', (data) => updateLobbyParticipants(data.participants));
         socket.on('session-starting', () => setTimeout(enterWhiteboard, 1000));
-        socket.on('session-started', (data) => { enterWhiteboard(); if (data.participants) updateParticipants(data.participants); });
+        socket.on('session-started', (data) => { 
+            enterWhiteboard(); 
+            if (data.participants) updateParticipants(data.participants); 
+        });
+        
         socket.on('drawing', (data) => {
             // Only draw if it's for the current slide
             if (data.slideIndex === undefined || data.slideIndex === currentSlideIndex) {
                 drawRemote(data);
             }
         });
+        
         socket.on('clear-canvas', () => {
             const slideKey = `slide_${currentSlideIndex}`;
             slideDrawings.delete(slideKey);
             redrawCanvas();
         });
+        
         socket.on('chat-message', (data) => addChatMessage(data.username, data.message));
         socket.on('room-not-found', () => alert('Room not found'));
         
-        // File sharing events
+        // File sharing events - FIXED
+        socket.on('file-uploaded', (data) => {
+            console.log('File upload notification received:', data);
+            addChatMessage('System', `📁 ${data.user} uploaded: ${data.filename}`);
+            
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.user})</div>`;
+        });
+        
         socket.on('file-shared', (data) => {
+            console.log('File shared event received:', data.filename);
             slides = [data.data];
             currentSlideIndex = 0;
             loadCurrentSlide();
+            
             const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename}</div>`;
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.username})</div>`;
+            
+            addChatMessage('System', `📁 ${data.username} shared image: ${data.filename}`);
         });
         
         socket.on('presentation-shared', (data) => {
+            console.log('Presentation shared event received:', data.filename);
             slides = data.slides;
             currentSlideIndex = data.currentSlide;
             slideDrawings.clear();
             document.getElementById('slideControls').style.display = 'block';
             updateSlideCounter();
             loadCurrentSlide();
+            
             const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📊 ${data.filename}</div>`;
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📊 ${data.filename} (by ${data.username})</div>`;
+            
+            addChatMessage('System', `📊 ${data.username} shared presentation: ${data.filename}`);
         });
         
         socket.on('slide-changed', (data) => {
@@ -684,15 +743,6 @@
                 ctx.fillText(data.text, data.x, data.y);
                 ctx.restore();
             }
-        });
-        
-        socket.on('file-uploaded', (data) => {
-            // Show file notification to all users
-            addChatMessage('System', `📁 ${data.user} uploaded: ${data.filename}`);
-            
-            // Update file list for everyone
-            const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.user})</div>`;
         });
         
         // Tool controls
