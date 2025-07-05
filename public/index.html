@@ -76,13 +76,25 @@
                 <div id="fileList" style="margin-bottom: 1rem;">
                     <div style="color: #666; font-size: 14px;">No files uploaded</div>
                 </div>
+                <button type="button" onclick="clearBackground()" style="width: 100%; padding: 8px; background: #f44336; color: white; border: none; border-radius: 6px; margin-bottom: 1rem;">Clear Background</button>
                 <div id="slideControls" style="display: none;">
                     <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
                         <button type="button" onclick="previousSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 6px;">← Prev</button>
                         <span id="slideCounter" style="font-size: 14px; font-weight: 600;">1 / 1</span>
-                        <button type="button" onclick="nextSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 6px;">Next →</button>
+                        <button type="button" onclick="nextSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: radius: 6px;">Next →</button>
                     </div>
                     <button type="button" onclick="clearSlideDrawings()" style="width: 100%; padding: 8px; background: #ff9800; color: white; border: none; border-radius: 6px;">Clear Slide Drawings</button>
+                </div>
+                
+                <!-- Host Controls for Participant Permissions -->
+                <div id="hostPermissionControls" style="display: none; margin-top: 1rem; padding: 1rem; background: #fff3e0; border-radius: 8px; border-left: 4px solid #ff9800;">
+                    <h4 style="margin-bottom: 1rem; color: #333;">🎯 Host Controls</h4>
+                    <button type="button" id="toggleDrawingBtn" onclick="toggleParticipantDrawing()" style="width: 100%; padding: 8px; background: #4caf50; color: white; border: none; border-radius: 6px; margin-bottom: 0.5rem;">
+                        🖊️ Drawing: Enabled
+                    </button>
+                    <button type="button" id="toggleChatBtn" onclick="toggleParticipantChat()" style="width: 100%; padding: 8px; background: #4caf50; color: white; border: none; border-radius: 6px;">
+                        💬 Chat: Enabled
+                    </button>
                 </div>
             </div>
         </div>
@@ -154,12 +166,13 @@
         const VIRTUAL_HEIGHT = 1080;
         let scale = 1, offsetX = 0, offsetY = 0;
         
-        // Enhanced state for slides and files
+        // Enhanced state for permissions and debugging
         let currentTool = 'pen', currentColor = '#000000', currentSize = 5;
         let currentRoom = '', username = '', userRole = 'participant', isHost = false;
         let sessionStarted = false, isDrawing = false, lastPoint = null;
         let backgroundImage = null, slides = [], currentSlideIndex = 0;
-        let slideDrawings = new Map(); // Store drawings per slide
+        let slideDrawings = new Map();
+        let canDraw = true, canChat = true; // Participant permissions
         
         function resizeCanvas() {
             const rect = canvas.parentElement.getBoundingClientRect();
@@ -232,6 +245,12 @@
             e.preventDefault();
             if (!sessionStarted) return;
             
+            // Check permissions for participants
+            if (!isHost && !canDraw) {
+                addChatMessage('System', 'Drawing is disabled by the host');
+                return;
+            }
+            
             // Handle text tool
             if (currentTool === 'text') {
                 addTextBox(e);
@@ -244,6 +263,21 @@
             
             drawLocal(coords, 'start');
             socket.emit('drawing', { x: coords.x, y: coords.y, color: currentColor, size: currentSize, tool: currentTool, type: 'start', slideIndex: currentSlideIndex });
+        }
+        
+        function sendMessage() {
+            // Check chat permissions for participants
+            if (!isHost && !canChat) {
+                addChatMessage('System', 'Chat is disabled by the host');
+                return;
+            }
+            
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (message) {
+                socket.emit('chat-message', message);
+                input.value = '';
+            }
         }
         
         function addTextBox(e) {
@@ -432,6 +466,11 @@
             mainApp.classList.add('active');
             document.getElementById('currentRoom').textContent = currentRoom;
             
+            // Show host controls if user is host
+            if (isHost) {
+                document.getElementById('hostPermissionControls').style.display = 'block';
+            }
+            
             resizeCanvas();
             sessionStarted = true;
             
@@ -470,21 +509,96 @@
             const file = event.target.files[0];
             if (!file) return;
             
+            console.log('File selected:', file.name, file.type);
+            
             const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${file.name}</div>`;
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${file.name} (uploading...)</div>`;
+            
+            // Immediate notification
+            socket.emit('file-upload-started', {
+                filename: file.name,
+                type: file.type,
+                username: username
+            });
             
             if (file.type.startsWith('image/')) {
                 handleImageFile(file);
             } else if (file.name.endsWith('.pdf') || file.name.endsWith('.ppt') || file.name.endsWith('.pptx')) {
                 handlePresentationFile(file);
             }
+        }
+        
+        function handleImageFile(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                console.log('Image loaded, setting as background');
+                
+                slides = [e.target.result];
+                currentSlideIndex = 0;
+                loadCurrentSlide();
+                
+                // Update file list
+                const fileList = document.getElementById('fileList');
+                fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${file.name} (active)</div>`;
+                
+                // Broadcast to ALL users including self
+                socket.emit('background-image-set', {
+                    imageData: e.target.result,
+                    filename: file.name,
+                    username: username
+                });
+                
+                console.log('Background image broadcast sent');
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function clearBackground() {
+            backgroundImage = null;
+            slides = [];
+            currentSlideIndex = 0;
+            document.getElementById('slideControls').style.display = 'none';
+            document.getElementById('fileList').innerHTML = '<div style="color: #666; font-size: 14px;">No files uploaded</div>';
             
-            // Always broadcast file info immediately
-            socket.emit('file-uploaded', {
-                filename: file.name,
-                type: file.type,
-                user: username
-            });
+            redrawCanvas(); // This will clear the background
+            
+            socket.emit('background-cleared', { username: username });
+            addChatMessage('System', 'Background cleared');
+        }
+        
+        function toggleParticipantDrawing() {
+            if (!isHost) return;
+            
+            socket.emit('toggle-participant-drawing');
+        }
+        
+        function toggleParticipantChat() {
+            if (!isHost) return;
+            
+            socket.emit('toggle-participant-chat');
+        }
+        
+        function updatePermissionButtons(settings) {
+            if (!isHost) return;
+            
+            const drawBtn = document.getElementById('toggleDrawingBtn');
+            const chatBtn = document.getElementById('toggleChatBtn');
+            
+            if (settings.participantsCanDraw) {
+                drawBtn.textContent = '🚫 Drawing: Enabled (Click to Disable)';
+                drawBtn.style.background = '#4caf50';
+            } else {
+                drawBtn.textContent = '🖊️ Drawing: Disabled (Click to Enable)';
+                drawBtn.style.background = '#f44336';
+            }
+            
+            if (settings.participantsCanChat) {
+                chatBtn.textContent = '🚫 Chat: Enabled (Click to Disable)';
+                chatBtn.style.background = '#4caf50';
+            } else {
+                chatBtn.textContent = '💬 Chat: Disabled (Click to Enable)';
+                chatBtn.style.background = '#f44336';
+            }
         }
         
         function handleImageFile(file) {
@@ -682,40 +796,68 @@
         socket.on('chat-message', (data) => addChatMessage(data.username, data.message));
         socket.on('room-not-found', () => alert('Room not found'));
         
-        // File sharing events - FIXED
-        socket.on('file-uploaded', (data) => {
-            console.log('File upload notification received:', data);
-            addChatMessage('System', `📁 ${data.user} uploaded: ${data.filename}`);
-            
-            const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.user})</div>`;
+        // Enhanced file sharing events with better debugging
+        socket.on('file-upload-started', (data) => {
+            console.log('Someone started uploading:', data);
+            addChatMessage('System', `📁 ${data.username} is uploading: ${data.filename}`);
         });
         
-        socket.on('file-shared', (data) => {
-            console.log('File shared event received:', data.filename);
-            slides = [data.data];
+        socket.on('background-image-set', (data) => {
+            console.log('Background image received from:', data.username);
+            
+            const img = new Image();
+            img.onload = function() {
+                backgroundImage = img;
+                slides = [data.imageData];
+                currentSlideIndex = 0;
+                loadCurrentSlide();
+                
+                const fileList = document.getElementById('fileList');
+                fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.username})</div>`;
+                
+                addChatMessage('System', `📁 ${data.username} set background: ${data.filename}`);
+            };
+            img.src = data.imageData;
+        });
+        
+        socket.on('background-cleared', (data) => {
+            backgroundImage = null;
+            slides = [];
             currentSlideIndex = 0;
-            loadCurrentSlide();
-            
-            const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.username})</div>`;
-            
-            addChatMessage('System', `📁 ${data.username} shared image: ${data.filename}`);
+            document.getElementById('slideControls').style.display = 'none';
+            document.getElementById('fileList').innerHTML = '<div style="color: #666; font-size: 14px;">No files uploaded</div>';
+            redrawCanvas();
+            addChatMessage('System', `🗑️ ${data.username} cleared the background`);
         });
         
-        socket.on('presentation-shared', (data) => {
-            console.log('Presentation shared event received:', data.filename);
-            slides = data.slides;
-            currentSlideIndex = data.currentSlide;
-            slideDrawings.clear();
-            document.getElementById('slideControls').style.display = 'block';
-            updateSlideCounter();
-            loadCurrentSlide();
+        // Permission management events
+        socket.on('permissions-updated', (data) => {
+            console.log('Permissions updated:', data);
             
-            const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📊 ${data.filename} (by ${data.username})</div>`;
-            
-            addChatMessage('System', `📊 ${data.username} shared presentation: ${data.filename}`);
+            if (!isHost) {
+                canDraw = data.settings.participantsCanDraw;
+                canChat = data.settings.participantsCanChat;
+                
+                // Update UI based on permissions
+                const chatInput = document.getElementById('chatInput');
+                chatInput.disabled = !canChat;
+                chatInput.placeholder = canChat ? 'Type message...' : 'Chat disabled by host';
+                
+                if (!canDraw) {
+                    addChatMessage('System', '🚫 Drawing has been disabled');
+                } else {
+                    addChatMessage('System', '🖊️ Drawing has been enabled');
+                }
+                
+                if (!canChat) {
+                    addChatMessage('System', '🚫 Chat has been disabled');
+                } else {
+                    addChatMessage('System', '💬 Chat has been enabled');
+                }
+            } else {
+                // Update host control buttons
+                updatePermissionButtons(data.settings);
+            }
         });
         
         socket.on('slide-changed', (data) => {

@@ -63,6 +63,9 @@ io.on('connection', (socket) => {
         participants: new Map(),
         drawings: [],
         backgroundImage: null,
+        slides: [],
+        currentSlide: 0,
+        slideDrawings: new Map(),
         settings: {
           hostCanClear: true,
           hostCanMute: true,
@@ -144,11 +147,23 @@ io.on('connection', (socket) => {
     
     console.log(`${username} joined room: ${roomId}`);
     
-    // Notify participant
-    socket.emit('room-joined', {
+    // Prepare room data for participant
+    const roomData = {
       roomId: roomId,
+      roomState: room.state,
       participants: Array.from(room.participants.values())
-    });
+    };
+    
+    // If room is active, include current state
+    if (room.state === ROOM_STATES.ACTIVE) {
+      roomData.slides = room.slides;
+      roomData.currentSlide = room.currentSlide;
+      roomData.backgroundImage = room.backgroundImage;
+      roomData.settings = room.settings;
+    }
+    
+    // Notify participant
+    socket.emit('room-joined', roomData);
     
     // Notify all participants in the room
     io.to(roomId).emit('lobby-updated', {
@@ -220,6 +235,17 @@ io.on('connection', (socket) => {
       timestamp: Date.now()
     };
     
+    // Store drawing data for slides
+    if (data.slideIndex !== undefined) {
+      const slideKey = `slide_${data.slideIndex}`;
+      if (!room.slideDrawings.has(slideKey)) {
+        room.slideDrawings.set(slideKey, []);
+      }
+      if (data.type === 'draw') {
+        room.slideDrawings.get(slideKey).push(drawingData);
+      }
+    }
+    
     // Only store actual drawing points, not start/stop events
     if (data.type === 'draw') {
       room.drawings.push(drawingData);
@@ -254,102 +280,159 @@ io.on('connection', (socket) => {
     io.to(socket.roomId).emit('chat-message', chatData);
   });
   
+  // File upload notification
+  socket.on('file-upload-started', (data) => {
+    if (!socket.roomId) return;
+    
+    // Broadcast to other users in the room
+    socket.to(socket.roomId).emit('file-upload-started', {
+      ...data,
+      userId: socket.id
+    });
+  });
+  
   // Handle background image sharing
-  socket.on('background-image', (data) => {
+  socket.on('background-image-set', (data) => {
     if (!socket.roomId) return;
     
     const room = rooms.get(socket.roomId);
     if (room) {
       // Store the background image in room data
-      room.backgroundImage = {
-        dataUrl: data.dataUrl,
-        filename: data.filename,
-        sharedBy: socket.username,
-        timestamp: Date.now()
-      };
+      room.backgroundImage = data.imageData;
+      room.slides = [data.imageData];
+      room.currentSlide = 0;
       
-      // Broadcast to all users in the room
-      io.to(socket.roomId).emit('background-image', {
-        dataUrl: data.dataUrl,
+      // Broadcast to other users in the room (not the sender)
+      socket.to(socket.roomId).emit('background-image-set', {
+        imageData: data.imageData,
         filename: data.filename,
-        sharedBy: socket.username
+        username: data.username
       });
       
       console.log(`${socket.username} shared background image: ${data.filename}`);
     }
   });
   
-  // Handle text events
-  socket.on('text-started', (data) => {
+  // Handle background clearing
+  socket.on('background-cleared', (data) => {
     if (!socket.roomId) return;
     
     const room = rooms.get(socket.roomId);
-    const participant = room?.participants.get(socket.id);
-    
-    if (room && participant) {
-      const canDraw = participant.role === 'host' || room.settings.participantsCanDraw;
-      if (!canDraw) return;
+    if (room) {
+      room.backgroundImage = null;
+      room.slides = [];
+      room.currentSlide = 0;
+      room.slideDrawings.clear();
       
-      const textData = {
-        ...data,
-        userId: socket.id,
-        username: socket.username,
-        role: socket.role
-      };
+      // Broadcast to other users in the room
+      socket.to(socket.roomId).emit('background-cleared', {
+        username: data.username
+      });
       
-      socket.to(socket.roomId).emit('text-started', textData);
+      console.log(`${socket.username} cleared background`);
     }
   });
   
-  socket.on('text-typing', (data) => {
+  // Handle file sharing (images and presentations)
+  socket.on('file-shared', (data) => {
     if (!socket.roomId) return;
     
     const room = rooms.get(socket.roomId);
-    const participant = room?.participants.get(socket.id);
-    
-    if (room && participant) {
-      const canDraw = participant.role === 'host' || room.settings.participantsCanDraw;
-      if (!canDraw) return;
-      
-      const textData = {
-        ...data,
-        userId: socket.id,
-        username: socket.username,
-        role: socket.role
-      };
-      
-      // Broadcast live typing to other users
-      socket.to(socket.roomId).emit('text-typing', textData);
-    }
-  });
-  
-  socket.on('text-completed', (data) => {
-    if (!socket.roomId) return;
-    
-    const room = rooms.get(socket.roomId);
-    const participant = room?.participants.get(socket.id);
-    
-    if (room && participant) {
-      const canDraw = participant.role === 'host' || room.settings.participantsCanDraw;
-      if (!canDraw) return;
-      
-      const textData = {
-        ...data,
-        userId: socket.id,
-        username: socket.username,
-        role: socket.role
-      };
-      
-      // Store completed text
-      if (data.text && data.text.trim()) {
-        room.drawings.push({
-          type: 'text',
-          ...textData,
-          timestamp: Date.now()
-        });
+    if (room) {
+      if (data.type === 'image') {
+        room.backgroundImage = data.data;
+        room.slides = [data.data];
+        room.currentSlide = 0;
       }
       
-      socket.to(socket.roomId).emit('text-completed', textData);
+      // Broadcast to other users
+      socket.to(socket.roomId).emit('file-shared', {
+        ...data,
+        sharedBy: socket.username
+      });
+    }
+  });
+  
+  // Handle presentation sharing
+  socket.on('presentation-shared', (data) => {
+    if (!socket.roomId) return;
+    
+    const room = rooms.get(socket.roomId);
+    if (room) {
+      room.slides = data.slides;
+      room.currentSlide = data.currentSlide || 0;
+      room.slideDrawings.clear(); // Clear previous slide drawings
+      
+      // Broadcast to other users
+      socket.to(socket.roomId).emit('presentation-shared', {
+        slides: data.slides,
+        filename: data.filename,
+        currentSlide: room.currentSlide,
+        username: data.username
+      });
+      
+      console.log(`${socket.username} shared presentation: ${data.filename}`);
+    }
+  });
+  
+  // Handle slide changes
+  socket.on('slide-changed', (data) => {
+    if (!socket.roomId) return;
+    
+    const room = rooms.get(socket.roomId);
+    if (room) {
+      room.currentSlide = data.slideIndex;
+      
+      // Broadcast to other users
+      socket.to(socket.roomId).emit('slide-changed', {
+        slideIndex: data.slideIndex
+      });
+    }
+  });
+  
+  // Handle slide drawings clearing
+  socket.on('slide-drawings-cleared', (data) => {
+    if (!socket.roomId) return;
+    
+    const room = rooms.get(socket.roomId);
+    if (room) {
+      const slideKey = `slide_${data.slideIndex}`;
+      room.slideDrawings.delete(slideKey);
+      
+      // Broadcast to other users
+      socket.to(socket.roomId).emit('slide-drawings-cleared', {
+        slideIndex: data.slideIndex
+      });
+    }
+  });
+  
+  // Handle text events
+  socket.on('text-added', (data) => {
+    if (!socket.roomId) return;
+    
+    const room = rooms.get(socket.roomId);
+    const participant = room?.participants.get(socket.id);
+    
+    if (room && participant) {
+      const canDraw = participant.role === 'host' || room.settings.participantsCanDraw;
+      if (!canDraw) return;
+      
+      const textData = {
+        ...data,
+        userId: socket.id,
+        username: socket.username,
+        role: socket.role,
+        timestamp: Date.now()
+      };
+      
+      // Store text as drawing
+      room.drawings.push({
+        type: 'text',
+        ...textData
+      });
+      
+      // Broadcast to other users
+      socket.to(socket.roomId).emit('text-added', textData);
     }
   });
   
@@ -360,6 +443,11 @@ io.on('connection', (socket) => {
     const room = rooms.get(socket.roomId);
     if (room && (socket.role === 'host' || !room.settings.hostCanClear)) {
       room.drawings = [];
+      
+      // Clear current slide drawings
+      const slideKey = `slide_${room.currentSlide}`;
+      room.slideDrawings.delete(slideKey);
+      
       io.to(socket.roomId).emit('clear-canvas', {
         clearedBy: socket.username,
         role: socket.role
@@ -367,7 +455,7 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Host controls
+  // Host controls for participant permissions
   socket.on('toggle-participant-drawing', () => {
     if (!socket.roomId || socket.role !== 'host') return;
     
@@ -375,10 +463,12 @@ io.on('connection', (socket) => {
     if (room) {
       room.settings.participantsCanDraw = !room.settings.participantsCanDraw;
       
-      io.to(socket.roomId).emit('settings-updated', {
+      io.to(socket.roomId).emit('permissions-updated', {
         settings: room.settings,
         updatedBy: socket.username
       });
+      
+      console.log(`Drawing permissions ${room.settings.participantsCanDraw ? 'enabled' : 'disabled'} by ${socket.username}`);
     }
   });
   
@@ -389,10 +479,12 @@ io.on('connection', (socket) => {
     if (room) {
       room.settings.participantsCanChat = !room.settings.participantsCanChat;
       
-      io.to(socket.roomId).emit('settings-updated', {
+      io.to(socket.roomId).emit('permissions-updated', {
         settings: room.settings,
         updatedBy: socket.username
       });
+      
+      console.log(`Chat permissions ${room.settings.participantsCanChat ? 'enabled' : 'disabled'} by ${socket.username}`);
     }
   });
   
