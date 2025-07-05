@@ -232,12 +232,80 @@
             e.preventDefault();
             if (!sessionStarted) return;
             
+            // Handle text tool
+            if (currentTool === 'text') {
+                addTextBox(e);
+                return;
+            }
+            
             isDrawing = true;
             const coords = getVirtualCoords(e);
             lastPoint = coords;
             
             drawLocal(coords, 'start');
-            socket.emit('drawing', { x: coords.x, y: coords.y, color: currentColor, size: currentSize, tool: currentTool, type: 'start' });
+            socket.emit('drawing', { x: coords.x, y: coords.y, color: currentColor, size: currentSize, tool: currentTool, type: 'start', slideIndex: currentSlideIndex });
+        }
+        
+        function addTextBox(e) {
+            const coords = getVirtualCoords(e);
+            const canvasCoords = {
+                x: coords.x * scale + offsetX,
+                y: coords.y * scale + offsetY
+            };
+            
+            const textInput = document.createElement('textarea');
+            textInput.style.cssText = `
+                position: absolute;
+                left: ${canvasCoords.x}px;
+                top: ${canvasCoords.y}px;
+                background: transparent;
+                border: 2px dashed #4285f4;
+                outline: none;
+                font-family: Arial, sans-serif;
+                font-size: ${Math.max(12, currentSize)}px;
+                color: ${currentColor};
+                padding: 4px;
+                min-width: 100px;
+                min-height: 30px;
+                resize: both;
+                z-index: 1000;
+            `;
+            textInput.placeholder = 'Type text here...';
+            
+            const finishText = () => {
+                const text = textInput.value.trim();
+                if (text) {
+                    // Draw text on canvas
+                    ctx.save();
+                    ctx.translate(offsetX, offsetY);
+                    ctx.scale(scale, scale);
+                    ctx.font = `${Math.max(12, currentSize)}px Arial`;
+                    ctx.fillStyle = currentColor;
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(text, coords.x, coords.y);
+                    ctx.restore();
+                    
+                    // Broadcast text to other users
+                    socket.emit('text-added', {
+                        x: coords.x,
+                        y: coords.y,
+                        text: text,
+                        color: currentColor,
+                        size: Math.max(12, currentSize),
+                        slideIndex: currentSlideIndex
+                    });
+                }
+                textInput.remove();
+            };
+            
+            textInput.addEventListener('blur', finishText);
+            textInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') finishText();
+                e.stopPropagation();
+            });
+            
+            document.getElementById('textInputOverlay').appendChild(textInput);
+            setTimeout(() => textInput.focus(), 10);
         }
         
         function draw(e) {
@@ -324,9 +392,14 @@
             const container = document.getElementById('lobbyParticipants');
             container.innerHTML = participants.map(participant => {
                 const roleIcon = participant.role === 'host' ? '🎯' : '👥';
-                const bgColor = participant.role === 'host' ? 'linear-gradient(135deg, #fff3e0, #ffe0b2)' : '#f8f9fa';
                 return `
-                    <div class="participant-card ${participant.role}" style="background: ${bgColor};">
+                    <div style="
+                        background: ${participant.role === 'host' ? 'linear-gradient(135deg, #fff3e0, #ffe0b2)' : '#f8f9fa'};
+                        border-radius: 12px;
+                        padding: 1rem;
+                        text-align: center;
+                        border: 2px solid ${participant.role === 'host' ? '#ff9800' : 'transparent'};
+                    ">
                         <div style="font-size: 2rem; margin-bottom: 0.5rem;">${roleIcon}</div>
                         <div style="font-weight: 600; margin-bottom: 0.25rem;">${participant.username}</div>
                         <div style="font-size: 0.8rem; color: #666; text-transform: uppercase;">${participant.role}</div>
@@ -391,13 +464,20 @@
             if (!file) return;
             
             const fileList = document.getElementById('fileList');
-            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">${file.name}</div>`;
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${file.name}</div>`;
             
             if (file.type.startsWith('image/')) {
                 handleImageFile(file);
             } else if (file.name.endsWith('.pdf') || file.name.endsWith('.ppt') || file.name.endsWith('.pptx')) {
                 handlePresentationFile(file);
             }
+            
+            // Always broadcast file info immediately
+            socket.emit('file-uploaded', {
+                filename: file.name,
+                type: file.type,
+                user: username
+            });
         }
         
         function handleImageFile(file) {
@@ -591,6 +671,28 @@
                 slideDrawings.delete(slideKey);
                 redrawCanvas();
             }
+        });
+        
+        socket.on('text-added', (data) => {
+            if (data.slideIndex === undefined || data.slideIndex === currentSlideIndex) {
+                ctx.save();
+                ctx.translate(offsetX, offsetY);
+                ctx.scale(scale, scale);
+                ctx.font = `${data.size}px Arial`;
+                ctx.fillStyle = data.color;
+                ctx.textBaseline = 'top';
+                ctx.fillText(data.text, data.x, data.y);
+                ctx.restore();
+            }
+        });
+        
+        socket.on('file-uploaded', (data) => {
+            // Show file notification to all users
+            addChatMessage('System', `📁 ${data.user} uploaded: ${data.filename}`);
+            
+            // Update file list for everyone
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename} (by ${data.user})</div>`;
         });
         
         // Tool controls
