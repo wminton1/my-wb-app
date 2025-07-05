@@ -72,7 +72,18 @@
         <div class="left-panel">
             <div class="panel-section">
                 <h3>📁 Files</h3>
-                <input type="file" id="fileInput" accept="image/*" onchange="handleFileUpload(event)" style="width: 100%;">
+                <input type="file" id="fileInput" accept="image/*,.pdf,.ppt,.pptx" onchange="handleFileUpload(event)" style="width: 100%; margin-bottom: 1rem;">
+                <div id="fileList" style="margin-bottom: 1rem;">
+                    <div style="color: #666; font-size: 14px;">No files uploaded</div>
+                </div>
+                <div id="slideControls" style="display: none;">
+                    <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
+                        <button type="button" onclick="previousSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 6px;">← Prev</button>
+                        <span id="slideCounter" style="font-size: 14px; font-weight: 600;">1 / 1</span>
+                        <button type="button" onclick="nextSlide()" style="padding: 8px 12px; background: #4285f4; color: white; border: none; border-radius: 6px;">Next →</button>
+                    </div>
+                    <button type="button" onclick="clearSlideDrawings()" style="width: 100%; padding: 8px; background: #ff9800; color: white; border: none; border-radius: 6px;">Clear Slide Drawings</button>
+                </div>
             </div>
         </div>
         <div class="right-panel">
@@ -123,7 +134,9 @@
                 <h2 class="lobby-title">Room Lobby</h2>
                 <div class="room-code" id="lobbyRoomCode">ABC123</div>
             </div>
-            <div class="participants-grid" id="lobbyParticipants"></div>
+            <div class="participants-grid" id="lobbyParticipants">
+                <!-- Participants will be populated here -->
+            </div>
             <div class="lobby-controls">
                 <button type="button" class="lobby-btn" onclick="leaveLobby()">Leave</button>
                 <button type="button" class="lobby-btn primary" id="startSessionBtn" onclick="startSession()" style="display: none;">Start Session</button>
@@ -141,10 +154,12 @@
         const VIRTUAL_HEIGHT = 1080;
         let scale = 1, offsetX = 0, offsetY = 0;
         
-        // State
+        // Enhanced state for slides and files
         let currentTool = 'pen', currentColor = '#000000', currentSize = 5;
         let currentRoom = '', username = '', userRole = 'participant', isHost = false;
         let sessionStarted = false, isDrawing = false, lastPoint = null;
+        let backgroundImage = null, slides = [], currentSlideIndex = 0;
+        let slideDrawings = new Map(); // Store drawings per slide
         
         function resizeCanvas() {
             const rect = canvas.parentElement.getBoundingClientRect();
@@ -232,10 +247,30 @@
             const coords = getVirtualCoords(e);
             drawLocal(coords, 'draw');
             
+            // Store drawing for current slide
+            const slideKey = `slide_${currentSlideIndex}`;
+            if (!slideDrawings.has(slideKey)) {
+                slideDrawings.set(slideKey, []);
+            }
+            
+            // Add to current stroke or create new one
+            const currentDrawings = slideDrawings.get(slideKey);
+            if (currentDrawings.length === 0 || !currentDrawings[currentDrawings.length - 1].path) {
+                currentDrawings.push({
+                    tool: currentTool,
+                    color: currentColor,
+                    size: currentSize,
+                    path: [lastPoint, coords]
+                });
+            } else {
+                currentDrawings[currentDrawings.length - 1].path.push(coords);
+            }
+            
             socket.emit('drawing', { 
                 x: coords.x, y: coords.y, 
                 lastX: lastPoint?.x, lastY: lastPoint?.y,
-                color: currentColor, size: currentSize, tool: currentTool, type: 'draw' 
+                color: currentColor, size: currentSize, tool: currentTool, type: 'draw',
+                slideIndex: currentSlideIndex
             });
             lastPoint = coords;
         }
@@ -283,6 +318,21 @@
             document.getElementById('lobbyScreen').style.display = 'flex';
             document.getElementById('lobbyRoomCode').textContent = currentRoom;
             if (isHost) document.getElementById('startSessionBtn').style.display = 'block';
+        }
+        
+        function updateLobbyParticipants(participants) {
+            const container = document.getElementById('lobbyParticipants');
+            container.innerHTML = participants.map(participant => {
+                const roleIcon = participant.role === 'host' ? '🎯' : '👥';
+                const bgColor = participant.role === 'host' ? 'linear-gradient(135deg, #fff3e0, #ffe0b2)' : '#f8f9fa';
+                return `
+                    <div class="participant-card ${participant.role}" style="background: ${bgColor};">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">${roleIcon}</div>
+                        <div style="font-weight: 600; margin-bottom: 0.25rem;">${participant.username}</div>
+                        <div style="font-size: 0.8rem; color: #666; text-transform: uppercase;">${participant.role}</div>
+                    </div>
+                `;
+            }).join('');
         }
         
         function startSession() {
@@ -338,33 +388,210 @@
         
         function handleFileUpload(event) {
             const file = event.target.files[0];
-            if (!file || !file.type.startsWith('image/')) return;
+            if (!file) return;
             
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">${file.name}</div>`;
+            
+            if (file.type.startsWith('image/')) {
+                handleImageFile(file);
+            } else if (file.name.endsWith('.pdf') || file.name.endsWith('.ppt') || file.name.endsWith('.pptx')) {
+                handlePresentationFile(file);
+            }
+        }
+        
+        function handleImageFile(file) {
             const reader = new FileReader();
             reader.onload = function(e) {
-                const img = new Image();
-                img.onload = function() {
-                    ctx.save();
-                    ctx.translate(offsetX, offsetY);
-                    ctx.scale(scale, scale);
-                    ctx.drawImage(img, 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
-                    ctx.restore();
-                };
-                img.src = e.target.result;
+                slides = [e.target.result];
+                currentSlideIndex = 0;
+                loadCurrentSlide();
+                
+                // Broadcast to other users
+                socket.emit('file-shared', {
+                    type: 'image',
+                    data: e.target.result,
+                    filename: file.name
+                });
             };
             reader.readAsDataURL(file);
         }
         
+        function handlePresentationFile(file) {
+            // For demo purposes, we'll treat presentations as multi-slide images
+            // In a real implementation, you'd use a library like PDF.js or similar
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                // Simulate multiple slides for demo
+                const demoSlides = [];
+                for (let i = 1; i <= 5; i++) {
+                    // Create placeholder slides
+                    const canvas = document.createElement('canvas');
+                    canvas.width = VIRTUAL_WIDTH;
+                    canvas.height = VIRTUAL_HEIGHT;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Create a simple slide background
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#4285f4';
+                    ctx.font = '48px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`Slide ${i}`, canvas.width/2, canvas.height/2);
+                    ctx.fillStyle = '#666';
+                    ctx.font = '24px Arial';
+                    ctx.fillText(file.name, canvas.width/2, canvas.height/2 + 60);
+                    
+                    demoSlides.push(canvas.toDataURL());
+                }
+                
+                slides = demoSlides;
+                currentSlideIndex = 0;
+                slideDrawings.clear();
+                
+                document.getElementById('slideControls').style.display = 'block';
+                updateSlideCounter();
+                loadCurrentSlide();
+                
+                // Broadcast to other users
+                socket.emit('presentation-shared', {
+                    slides: slides,
+                    filename: file.name,
+                    currentSlide: currentSlideIndex
+                });
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function loadCurrentSlide() {
+            if (slides.length === 0) return;
+            
+            const img = new Image();
+            img.onload = function() {
+                backgroundImage = img;
+                redrawCanvas();
+            };
+            img.src = slides[currentSlideIndex];
+        }
+        
+        function redrawCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw background/slide
+            if (backgroundImage) {
+                ctx.save();
+                ctx.translate(offsetX, offsetY);
+                ctx.scale(scale, scale);
+                ctx.drawImage(backgroundImage, 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+                ctx.restore();
+            }
+            
+            // Draw slide-specific drawings
+            const slideKey = `slide_${currentSlideIndex}`;
+            const drawings = slideDrawings.get(slideKey) || [];
+            drawings.forEach(drawing => {
+                ctx.save();
+                ctx.translate(offsetX, offsetY);
+                ctx.scale(scale, scale);
+                ctx.lineWidth = drawing.size;
+                ctx.lineCap = 'round';
+                ctx.strokeStyle = drawing.color;
+                if (drawing.tool === 'eraser') ctx.globalCompositeOperation = 'destination-out';
+                
+                if (drawing.path && drawing.path.length > 1) {
+                    ctx.beginPath();
+                    ctx.moveTo(drawing.path[0].x, drawing.path[0].y);
+                    for (let i = 1; i < drawing.path.length; i++) {
+                        ctx.lineTo(drawing.path[i].x, drawing.path[i].y);
+                    }
+                    ctx.stroke();
+                }
+                ctx.restore();
+            });
+        }
+        
+        function nextSlide() {
+            if (currentSlideIndex < slides.length - 1) {
+                currentSlideIndex++;
+                updateSlideCounter();
+                loadCurrentSlide();
+                socket.emit('slide-changed', { slideIndex: currentSlideIndex });
+            }
+        }
+        
+        function previousSlide() {
+            if (currentSlideIndex > 0) {
+                currentSlideIndex--;
+                updateSlideCounter();
+                loadCurrentSlide();
+                socket.emit('slide-changed', { slideIndex: currentSlideIndex });
+            }
+        }
+        
+        function updateSlideCounter() {
+            document.getElementById('slideCounter').textContent = `${currentSlideIndex + 1} / ${slides.length}`;
+        }
+        
+        function clearSlideDrawings() {
+            const slideKey = `slide_${currentSlideIndex}`;
+            slideDrawings.delete(slideKey);
+            redrawCanvas();
+            socket.emit('slide-drawings-cleared', { slideIndex: currentSlideIndex });
+        }
+        
         // Socket events
-        socket.on('room-created', (data) => { showLobby(); updateParticipants(data.participants); });
-        socket.on('room-joined', (data) => { showLobby(); updateParticipants(data.participants); });
-        socket.on('lobby-updated', (data) => updateParticipants(data.participants));
+        socket.on('room-created', (data) => { showLobby(); updateLobbyParticipants(data.participants); });
+        socket.on('room-joined', (data) => { showLobby(); updateLobbyParticipants(data.participants); });
+        socket.on('lobby-updated', (data) => updateLobbyParticipants(data.participants));
         socket.on('session-starting', () => setTimeout(enterWhiteboard, 1000));
         socket.on('session-started', (data) => { enterWhiteboard(); if (data.participants) updateParticipants(data.participants); });
-        socket.on('drawing', drawRemote);
-        socket.on('clear-canvas', () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+        socket.on('drawing', (data) => {
+            // Only draw if it's for the current slide
+            if (data.slideIndex === undefined || data.slideIndex === currentSlideIndex) {
+                drawRemote(data);
+            }
+        });
+        socket.on('clear-canvas', () => {
+            const slideKey = `slide_${currentSlideIndex}`;
+            slideDrawings.delete(slideKey);
+            redrawCanvas();
+        });
         socket.on('chat-message', (data) => addChatMessage(data.username, data.message));
         socket.on('room-not-found', () => alert('Room not found'));
+        
+        // File sharing events
+        socket.on('file-shared', (data) => {
+            slides = [data.data];
+            currentSlideIndex = 0;
+            loadCurrentSlide();
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📁 ${data.filename}</div>`;
+        });
+        
+        socket.on('presentation-shared', (data) => {
+            slides = data.slides;
+            currentSlideIndex = data.currentSlide;
+            slideDrawings.clear();
+            document.getElementById('slideControls').style.display = 'block';
+            updateSlideCounter();
+            loadCurrentSlide();
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = `<div style="color: #4285f4; font-weight: 600;">📊 ${data.filename}</div>`;
+        });
+        
+        socket.on('slide-changed', (data) => {
+            currentSlideIndex = data.slideIndex;
+            updateSlideCounter();
+            loadCurrentSlide();
+        });
+        
+        socket.on('slide-drawings-cleared', (data) => {
+            if (data.slideIndex === currentSlideIndex) {
+                const slideKey = `slide_${currentSlideIndex}`;
+                slideDrawings.delete(slideKey);
+                redrawCanvas();
+            }
+        });
         
         // Tool controls
         document.getElementById('colorPicker').addEventListener('change', (e) => currentColor = e.target.value);
